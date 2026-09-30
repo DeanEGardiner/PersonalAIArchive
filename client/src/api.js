@@ -1,0 +1,215 @@
+// API helper service for Personal AI Archive backend
+
+export const api = {
+  // Provider health & available models
+  async getHealth() {
+    const res = await fetch('/api/health');
+    if (!res.ok) throw new Error('Failed to fetch provider health');
+    return res.json();
+  },
+
+  // Settings
+  async getSettings() {
+    const res = await fetch('/api/settings');
+    if (!res.ok) throw new Error('Failed to fetch settings');
+    return res.json();
+  },
+
+  async updateSettings(settings) {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    if (!res.ok) throw new Error('Failed to update settings');
+    return res.json();
+  },
+
+  // Conversations
+  async getConversations() {
+    const res = await fetch('/api/conversations');
+    if (!res.ok) throw new Error('Failed to fetch conversations');
+    return res.json();
+  },
+
+  async getConversation(id) {
+    const res = await fetch(`/api/conversations/${id}`);
+    if (!res.ok) throw new Error('Failed to fetch conversation');
+    return res.json();
+  },
+
+  async createConversation({ title, provider, model }) {
+    const res = await fetch('/api/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, provider, model })
+    });
+    if (!res.ok) throw new Error('Failed to create conversation');
+    return res.json();
+  },
+
+  async deleteConversation(id) {
+    const res = await fetch(`/api/conversations/${id}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('Failed to delete conversation');
+    return res.json();
+  },
+
+  // Streaming Chat via SSE reader
+  async streamChat({
+    conversationId,
+    message,
+    provider,
+    model,
+    injectContext,
+    contextMode,
+    categoryIds,
+    onChunk,
+    onError,
+    onDone,
+    abortSignal
+  }) {
+    const response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversationId,
+        message,
+        provider,
+        model,
+        injectContext,
+        contextMode,
+        categoryIds
+      }),
+      signal: abortSignal
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Chat error: ${errText || response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep remainder
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6).trim();
+          if (!dataStr) continue;
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.type === 'init') {
+              // initialized
+            } else if (parsed.type === 'chunk') {
+              onChunk?.(parsed.text);
+            } else if (parsed.type === 'error') {
+              onError?.(parsed.error);
+            } else if (parsed.type === 'done') {
+              onDone?.(parsed);
+            }
+          } catch (e) {
+            console.error('SSE parse error:', e, dataStr);
+          }
+        }
+      }
+    }
+  },
+
+  // Archive & Search
+  async searchArchive(query) {
+    const res = await fetch(`/api/archive/search?q=${encodeURIComponent(query)}`);
+    if (!res.ok) throw new Error('Failed to search archive');
+    return res.json();
+  },
+
+  async getTimeline(limit = 100) {
+    const res = await fetch(`/api/archive/timeline?limit=${limit}`);
+    if (!res.ok) throw new Error('Failed to load timeline');
+    return res.json();
+  },
+
+  // Summaries & Categories
+  async getSummaries() {
+    const res = await fetch('/api/summaries');
+    if (!res.ok) throw new Error('Failed to fetch summaries');
+    return res.json();
+  },
+
+  async getGlobalSummary() {
+    const res = await fetch('/api/summaries/global');
+    if (!res.ok) throw new Error('Failed to fetch global summary');
+    return res.json();
+  },
+
+  async getCategories() {
+    const res = await fetch('/api/categories');
+    if (!res.ok) throw new Error('Failed to fetch categories');
+    return res.json();
+  },
+
+  async generateSummaries({ mode = 'incremental', overrideProvider, overrideModel, apiKey } = {}) {
+    const res = await fetch('/api/summaries/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, overrideProvider, overrideModel, apiKey })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Failed to generate summaries');
+    }
+    return res.json();
+  },
+
+  // Google Search AI Grounding
+  async searchGoogleAI({ query, model = 'gemini-3.6-flash' }) {
+    const res = await fetch('/api/search/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, model })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to search Google AI');
+    }
+    return res.json();
+  },
+
+  // Direct message insertion into a conversation
+  async addMessage({ conversationId, role = 'assistant', content, provider = 'gemini', model = 'gemini-3.6-flash' }) {
+    const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, content, provider, model })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to add message');
+    }
+    return res.json();
+  },
+
+  // Summarize a specific URL with AI
+  async summarizeURL({ url, model = 'gemini-3.6-flash' }) {
+    const res = await fetch('/api/summarize-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, model })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to summarize web page');
+    }
+    return res.json();
+  }
+};
+

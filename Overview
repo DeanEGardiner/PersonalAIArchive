@@ -1,0 +1,104 @@
+AI Archive is a new family of applications that provide digital memory for your AI interactions.
+
+The AI Archive family includes three unique and distinctive applications:
+- The personal AI archive 
+- The Community AI Archive 
+- The Business AI Archive 
+
+1. Personal AI archive 
+
+Overview:
+The Personal AI Archive is a digital second brain and research companion for storing, classifying and searching all your private and public AI interactions. The personal AI archive captures every AI interaction and search with timestamps and source AI provider. All archive data is protected in a secure, encrypted database hosted on your local computer. Personal AI Archive usilises local AI to summarize and search your database, to provide a completely secure and offline brain, ensuring no personal data is ever sent to the cloud.  
+
+The app:
+This is an app that runs on your phone or computer that provides a simple front end for AI chatbots. You type your normal AI chat sessions into the app, and it passes them directly through to your AI service. In the background the app stores all the interactions and time stamps them, providing secure offline memory of all AI interactions.
+
+The features and benefits:
+- Works with any AI service, including local AI, to provide a single consistent repository  
+- Time stamps provide the ability to generate threads and show the evolution of idea.
+- The local repository will be automatically summarised and collated with AI tools.
+- The user does not require any additional skills or techniques. They just use it as a normal chat application. Everything just happens in the background.
+- Can be completely private and 100% offline with local AI
+
+ Key features:
+ -  All archive data is stored on your computer with an encrypted local database.
+ -  All functions can be run completely offline with local AI models 
+ -  Cloud-based AI can be utilized for search and summarization .  The user can select which information can be uploaded to the cloud services.
+ -  Can be utilized with any AI model. The AI search function will work across all queries and summaries produced by any AI service.
+ -  Incorporates with Google Cloud AI search functionality.  all Google searches are incorporated into the archive along with timestamps.
+ -   Includes an  AI digest function  which summarizes and classifies all data in the repository 
+ -  Download AI summaries in Markdown format that can be stored in your Obsidian note-taking tool.
+
+
+App requirements
+The interface will look like a standard AI chatbot application. It must be clean and simple.
+You interact with the app like a normal chatbot. You send queries and instructions and receive back information from the AI service. 
+You will be able to select which AI service you connect to. For the prototype it should support Gemini, ChatGPT and local models through Ollama and LMStudio.
+All text sent and received from the AI service will be stored locally as an archive. 
+Each interaction will be time stamped. 
+You will be able to view all this archive text through the interface when an appropriate button or control is pushed.
+There will be an option to summarise and categorise all archive text. This process uploads all archive text and use the chosen AI service to create categories and summaries. 
+When the categorise function is run subsequent times it will give an option to re-summarise and re-categorise all archive text, or to update the exiting summaries with new information since the last update.
+There will be an option to include archive data in AI queries. This should be selectable by category / summary or full data. 
+The app will integrate Google AI search to import data and information from the web that is not found in the training data. 
+
+Different versions:
+The Personal AI Archive comes in two versions.
+Standard: Free and open source. Available to download on GitHub. Runs on Windows, Mac and Android. With Android the local AI with Ollama or LMStudio will need to be hosted on a local computer. All input, output and storage is text only. 
+Professional: The Pro version includes all Standard version features and the following additional functionality:
+- incorporates Whispr using local IA for voice input and voice audio file transcription
+- allows uploading and archiving of documents, images, audio and video files.
+
+2. Community AI Archive
+Overview:
+The Community AI archive is a cloud based service which functions as an AI managed and moderated community forum. The interface is similar to the Personal AI archive, which operates like an AI chatbot with memory. The app will track top suggestions and questions based on a voting system.
+
+The app:
+The Community AI Archive will run in Google cloud. to access will require a Google account for authentication. It will use Google Gemini exclusively. there will not be an option to choose other cloud services. 
+
+Users will be able to create boards. A board will contain threads. Several default boards will be deployed at launch including:
+- Community notices
+- Buy, sell and swap
+- Events and activities
+- Lost and found
+- Job opportunities
+- Tips and suggestions
+
+User created boards would include things like:
+- Quest boards - for gamers
+- Enthusiast groups 
+- Language learners
+- Movies
+- Books
+
+App requirements:
+- all users will be registered. the initial test build will use a simple self service registration process. the final production build will use Google account authentication
+- there will be a board selection screen, which displays default boards and top ranking user board. there will be a search function to find boards.
+- When a board is opened the screen layout will look the same as the personal AI archive screen.
+- Boards contain threads and threads contain posts.
+- The first post in a thread becomes the title of the thread. 
+- All posts will track time stamps and the name of the user that created the post.
+- Post will have an image upload button for embedding images in the post.
+- When a new post is created the user will have three options on what to do with the post:
+	- just post as is.
+	- Post and perform an AI analysis of the community boards to answer any questions in the post.
+	- Post and do an internet search using Google AI search
+	- AI analysis and search results will be posted on the board. They will not have voting buttons. 
+- All user created posts will have a voting button. the vote can go positive or negative. A user can only vote once for any single post.
+- The most popular posts and the most popular users will be listed on a ranking board.
+- Posts that receive negative ranking will be reviewed by AI to determine if they are spam. 
+- Posts with more than 10 negative reviews will be removed automatically. 
+- If a user wants to create a new board they will put the suggestion in a post in the Tips and Suggestions Board. If the board gets 10 votes the board will be created. 
+
+3. Business AI Archive
+The business AI archive is an enterprise system that combines the functionality of the Personal AI Archive and the Community AI archive into a multi user, teams based archive and forum. The business AI archive is hosted in your data centre and uses your local hosted AI services. No user or corporate data leaves your environment. 
+Users will be authenticated using the corporate Active Directory. Access to board and threads will be managed through teams and groups. All user AI requests and Google searches will be tracked and logged. 
+
+The benefits:
+- Provides all the benefits of the Personal AI archive combined with the Community AI archive.
+- Works with corporate locally hosted open source AI platforms including Kimi, Deepseek and Qwen.
+- Open-source platforms allow for custom weights so that models focus on the needs of the business. Weights can be tuned for performance,  to provide a user experience similar to public cloud models. 
+- Corporate data and secure personal data can be stored in the archive in the encrypted  database.  This data never leaves the customer environment.
+- Over time, the AI archive becomes more useful as data is collected.
+- The AI archive creates a perfect audit trail for all user's searches and AI queries.
+-  Once the infrastructure is established, there are no ongoing operational costs apart from the server platform hosting and power costs.  No ongoing inference costs. 
