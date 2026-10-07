@@ -210,6 +210,34 @@ export const api = {
       throw new Error(err.error || 'Failed to summarize web page');
     }
     return res.json();
+  },
+
+  // Triple-Action Post Submission ('standard', 'ai_analysis', 'google_search')
+  async createPost({ conversationId, content, mode = 'standard', attachment, provider = 'gemini', model = 'gemini-3.8-flash' }) {
+    const targetUrl = conversationId ? `/api/conversations/${conversationId}/posts` : '/api/posts';
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId, content, mode, attachment, provider, model })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to submit post');
+    }
+    return res.json();
+  },
+
+  // Image Upload helper
+  async uploadImage(formData) {
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to upload image');
+    }
+    return res.json();
   }
 };
 

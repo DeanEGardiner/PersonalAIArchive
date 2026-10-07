@@ -104,6 +104,11 @@ function initSchema() {
     );
   `);
 
+  // Ensure post_type column exists on messages table for new and existing databases
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN post_type TEXT DEFAULT 'user'`);
+  } catch (_) {}
+
   // Default settings if absent
   const checkSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
   if (!checkSetting.get('only_private_ai_summarization')) {

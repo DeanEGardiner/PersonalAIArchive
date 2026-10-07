@@ -1393,5 +1393,87 @@ body {
   transform: scale(1.03);
 }
 
+/* ============================================================
+   Community-Style Triple Action Submission Modes & Processing Cards
+   ============================================================ */
+
+@keyframes pulseGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4);
+    border-color: rgba(139, 92, 246, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px 4px rgba(139, 92, 246, 0.2);
+    border-color: rgba(139, 92, 246, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+    border-color: rgba(139, 92, 246, 0.3);
+  }
+}
+
+@keyframes searchPulseGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(66, 133, 244, 0.4);
+    border-color: rgba(66, 133, 244, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px 4px rgba(66, 133, 244, 0.2);
+    border-color: rgba(66, 133, 244, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(66, 133, 244, 0);
+    border-color: rgba(66, 133, 244, 0.3);
+  }
+}
+
+@keyframes spinInfinite {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin-icon {
+  animation: spinInfinite 1.4s linear infinite;
+}
+
+.ai-processing-card {
+  animation: pulseGlow 2s infinite ease-in-out;
+}
+
+.search-processing-card {
+  animation: searchPulseGlow 2s infinite ease-in-out;
+}
+
+/* Badges for Archive Analysis & Google Search */
+.badge-archive-analysis {
+  background: rgba(139, 92, 246, 0.2) !important;
+  color: #c4b5fd !important;
+  border: 1px solid rgba(139, 92, 246, 0.4) !important;
+  font-weight: 700 !important;
+}
+
+.badge-google-search {
+  background: rgba(66, 133, 244, 0.2) !important;
+  color: #93c5fd !important;
+  border: 1px solid rgba(66, 133, 244, 0.4) !important;
+  font-weight: 700 !important;
+}
+
+/* Distinguishable Bubble Stylings */
+.bubble-ai-analysis {
+  border-left: 3px solid var(--accent-primary) !important;
+  background: rgba(139, 92, 246, 0.06) !important;
+}
+
+.bubble-google-search {
+  border-left: 3px solid #4285F4 !important;
+  background: rgba(66, 133, 244, 0.06) !important;
+}
+
+.post-attachments-gallery img:hover {
+  transform: scale(1.02);
+  transition: transform 0.15s ease;
+}
+
 
 

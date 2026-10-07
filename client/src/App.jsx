@@ -26,9 +26,10 @@ export default function App() {
   const [selectedProvider, setSelectedProvider] = useState('gemini');
   const [selectedModel, setSelectedModel] = useState('gemini-3.6-flash');
 
-  // Streaming State
+  // Streaming & Submission State
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const [isSubmittingPost, setIsSubmittingPost] = useState(false);
   const abortControllerRef = useRef(null);
 
   // Initial Load
@@ -243,6 +244,34 @@ export default function App() {
     }
   };
 
+  // Triple-Action Post Submission ('standard', 'ai_analysis', 'google_search')
+  const handleCreatePost = async ({ content, mode, attachment }) => {
+    if (isSubmittingPost) return;
+    setIsSubmittingPost(true);
+    try {
+      const res = await api.createPost({
+        conversationId: activeConvId,
+        content,
+        mode,
+        attachment,
+        provider: selectedProvider,
+        model: selectedModel
+      });
+
+      if (res.conversationId) {
+        if (!activeConvId || activeConvId !== res.conversationId) {
+          setActiveConvId(res.conversationId);
+        }
+        await selectConversation(res.conversationId, true);
+        await loadConversations();
+      }
+    } catch (err) {
+      alert('Failed to submit post: ' + err.message);
+    } finally {
+      setIsSubmittingPost(false);
+    }
+  };
+
   // Google Search AI Integration Handlers
   const handleInsertIntoComposer = (text) => {
     setExternalInputText(text);
@@ -414,6 +443,8 @@ export default function App() {
             externalInputText={externalInputText}
             setExternalInputText={setExternalInputText}
             onSummarizeUrl={handleSummarizeUrlToThread}
+            onSubmitPost={handleCreatePost}
+            isSubmitting={isSubmittingPost}
           />
         )}
 

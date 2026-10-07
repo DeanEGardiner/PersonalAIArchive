@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { ZipArchive } = require('archiver');
+const multer = require('multer');
 
 const { db, SUMMARIES_DIR, MEDIA_DIR } = require('./db');
 const providerRouter = require('./providers');
@@ -17,8 +18,36 @@ const PORT = process.env.PORT || 3002;
 app.use(cors());
 app.use(express.json());
 
-// Serve summaries directory for direct file viewing if desired
+// Serve summaries and media directories for direct file viewing
 app.use('/summaries-files', express.static(SUMMARIES_DIR));
+app.use('/media', express.static(MEDIA_DIR));
+
+// Configure Multer for image uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, MEDIA_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, `img-${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);
+  }
+});
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
+
+app.post('/api/upload', upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No image uploaded' });
+  }
+
+  const fileUrl = `/media/${req.file.filename}`;
+  res.json({
+    file_name: req.file.originalname,
+    file_path: fileUrl,
+    mime_type: req.file.mimetype,
+    file_size: req.file.size
+  });
+});
 
 // -------------------------------------------------------------
 // Provider Health & Models Endpoint
@@ -103,6 +132,13 @@ app.get('/api/conversations/:id', (req, res) => {
     WHERE conversation_id = ? AND is_deleted = 0
     ORDER BY timestamp ASC
   `).all(id);
+
+  // Attach files if any
+  for (const m of messages) {
+    const atts = db.prepare('SELECT * FROM attachments WHERE message_id = ? AND is_deleted = 0').all(m.id);
+    m.attachments = atts || [];
+  }
+
   res.json({ ...conv, messages });
 });
 
@@ -113,7 +149,313 @@ app.get('/api/conversations/:id/messages', (req, res) => {
     WHERE conversation_id = ? AND is_deleted = 0
     ORDER BY timestamp ASC
   `).all(id);
+  for (const m of messages) {
+    const atts = db.prepare('SELECT * FROM attachments WHERE message_id = ? AND is_deleted = 0').all(m.id);
+    m.attachments = atts || [];
+  }
   res.json(messages);
+});
+
+// -------------------------------------------------------------
+// Triple-Action Post Endpoint (Matching Community AI Archive)
+// Options: 'standard' (Just Post As Is) | 'ai_analysis' (Analysis of Local Archive) | 'google_search' (Google Cloud Search)
+// -------------------------------------------------------------
+app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
+  let { id: convId } = req.params;
+  const { 
+    conversationId,
+    content, 
+    mode = 'standard', // 'standard' | 'ai_analysis' | 'google_search'
+    attachment,
+    provider = 'gemini',
+    model = 'gemini-3.8-flash'
+  } = req.body;
+
+  if (convId === 'new' || !convId) {
+    convId = conversationId || null;
+  }
+
+  if (!content || !content.trim()) {
+    return res.status(400).json({ error: 'Post content cannot be empty.' });
+  }
+
+  const cleanContent = content.trim();
+  const now = new Date().toISOString();
+  let conversation = null;
+
+  if (convId) {
+    conversation = db.prepare('SELECT * FROM conversations WHERE id = ? AND is_deleted = 0').get(convId);
+  }
+
+  if (!conversation) {
+    convId = uuidv4();
+    const cleanTitle = cleanContent.slice(0, 40) + (cleanContent.length > 40 ? '...' : '');
+    db.prepare(`
+      INSERT INTO conversations (id, title, default_provider, default_model, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(convId, cleanTitle, provider, model, now, now);
+    conversation = { id: convId, title: cleanTitle };
+  } else if (!conversation.title || conversation.title === 'New Conversation' || conversation.title === 'Untitled Conversation') {
+    const cleanTitle = cleanContent.slice(0, 40) + (cleanContent.length > 40 ? '...' : '');
+    db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(cleanTitle, now, convId);
+    conversation.title = cleanTitle;
+  } else {
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, convId);
+  }
+
+  // 1. Create User Post
+  const userMsgId = uuidv4();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
+    VALUES (?, ?, 'user', 'user', ?, 'completed', ?, ?, ?, ?)
+  `).run(userMsgId, convId, cleanContent, provider, model, now, now);
+
+  // Sync to messages_fts
+  db.prepare(`
+    INSERT INTO messages_fts (content, conversation_id, message_id, role, timestamp)
+    VALUES (?, ?, ?, 'user', ?)
+  `).run(cleanContent, convId, userMsgId, now);
+
+  // Attach media if provided
+  let userAttachment = null;
+  if (attachment && attachment.file_path) {
+    const attId = uuidv4();
+    db.prepare(`
+      INSERT INTO attachments (id, message_id, file_name, file_path, mime_type, file_size, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(attId, userMsgId, attachment.file_name || 'image.jpg', attachment.file_path, attachment.mime_type || 'image/jpeg', attachment.file_size || 0, now, now);
+    userAttachment = {
+      id: attId,
+      message_id: userMsgId,
+      file_name: attachment.file_name,
+      file_path: attachment.file_path,
+      mime_type: attachment.mime_type
+    };
+  }
+
+  const userMessage = {
+    id: userMsgId,
+    conversation_id: convId,
+    role: 'user',
+    post_type: 'user',
+    content: cleanContent,
+    status: 'completed',
+    provider,
+    model,
+    timestamp: now,
+    attachments: userAttachment ? [userAttachment] : []
+  };
+
+  // Option 1: "Just Post As Is" -> Return immediately without AI generation
+  if (mode === 'standard') {
+    return res.json({
+      conversationId: convId,
+      conversationTitle: conversation.title,
+      userMessage,
+      aiResponse: null
+    });
+  }
+
+  // Handle Option 2 (Analysis of Local Archive) or Option 3 (Google Cloud Search)
+  let aiResponse = null;
+  const postImages = [];
+  if (attachment && attachment.file_path) {
+    postImages.push(attachment);
+  }
+
+  const geminiKeySetting = db.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").get();
+  const apiKey = geminiKeySetting?.value || process.env.GEMINI_API_KEY;
+
+  try {
+    if (mode === 'ai_analysis') {
+      // Gather relevant local archive context using FTS5 keyword extraction and Summaries
+      const stopWords = new Set([
+        'can', 'you', 'scan', 'the', 'local', 'archive', 'and', 'tell', 'me', 'if', 
+        'there', 'is', 'are', 'was', 'were', 'record', 'records', 'of', 'when', 'what', 
+        'where', 'how', 'who', 'why', 'which', 'located', 'in', 'at', 'on', 'to', 'for', 
+        'about', 'with', 'from', 'a', 'an', 'please', 'check', 'find', 'search', 'query', 
+        'show', 'give', 'any', 'information', 'details', 'do', 'does', 'did', 'have', 'has'
+      ]);
+      const words = cleanContent.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+
+      let searchHits = [];
+      try {
+        if (words.length > 0) {
+          // 1. Try strict AND query across extracted keywords
+          const andFts = words.map(w => `${w}*`).join(' AND ');
+          searchHits = db.prepare(`
+            SELECT m.content, m.role, m.timestamp, c.title as conversation_title
+            FROM messages_fts fts
+            JOIN messages m ON fts.message_id = m.id
+            JOIN conversations c ON m.conversation_id = c.id
+            WHERE messages_fts MATCH ? AND m.id != ? AND m.is_deleted = 0
+            ORDER BY m.timestamp DESC
+            LIMIT 5
+          `).all(andFts, userMsgId);
+
+          // 2. If no hits with AND, fall back to OR query
+          if (searchHits.length === 0 && words.length > 1) {
+            const orFts = words.map(w => `${w}*`).join(' OR ');
+            searchHits = db.prepare(`
+              SELECT m.content, m.role, m.timestamp, c.title as conversation_title
+              FROM messages_fts fts
+              JOIN messages m ON fts.message_id = m.id
+              JOIN conversations c ON m.conversation_id = c.id
+              WHERE messages_fts MATCH ? AND m.id != ? AND m.is_deleted = 0
+              ORDER BY m.timestamp DESC
+              LIMIT 5
+            `).all(orFts, userMsgId);
+          }
+        }
+      } catch (ftsErr) {
+        console.warn('[FTS Archive Search Warning]:', ftsErr.message);
+      }
+
+      // Category / Global summaries (up to 3 recent summaries)
+      const summaries = db.prepare(`
+        SELECT s.summary_text, c.name as category_name
+        FROM archive_summaries s
+        LEFT JOIN categories c ON s.category_id = c.id
+        WHERE s.is_deleted = 0
+        ORDER BY s.updated_at DESC
+        LIMIT 3
+      `).all();
+
+      let contextParts = [];
+      if (searchHits.length > 0) {
+        contextParts.push(`### Relevant Past Archive Conversations:\n` + searchHits.map(h => {
+          const snippet = h.content.length > 1000 ? h.content.slice(0, 1000) + '... [truncated]' : h.content;
+          return `[Conversation: "${h.conversation_title}"] (${h.role}): ${snippet}`;
+        }).join('\n\n'));
+      }
+      if (summaries.length > 0) {
+        contextParts.push(`### Archive Summaries:\n` + summaries.map(s => {
+          const sSnippet = s.summary_text.length > 600 ? s.summary_text.slice(0, 600) + '... [truncated]' : s.summary_text;
+          return `[${s.category_name || 'Global Digest'}]: ${sSnippet}`;
+        }).join('\n\n'));
+      }
+      const archiveContext = contextParts.join('\n\n');
+
+      const targetProvider = provider || conversation?.default_provider || 'gemini';
+      const targetModel = model || conversation?.default_model || (targetProvider === 'gemini' ? 'gemini-3.8-flash' : 'local-model');
+
+      const analysisResult = await providerRouter.analyzeArchiveKnowledge({
+        userPost: cleanContent,
+        conversationTitle: conversation.title,
+        archiveContext,
+        images: postImages,
+        model: targetModel,
+        apiKey,
+        provider: targetProvider
+      });
+
+      const aiText = analysisResult.text;
+      const actualProvider = analysisResult.provider || targetProvider;
+      const actualModel = analysisResult.model || targetModel;
+
+      const aiMsgId = uuidv4();
+      const aiTime = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
+        VALUES (?, ?, 'assistant', 'ai_analysis', ?, 'completed', ?, ?, ?, ?)
+      `).run(aiMsgId, convId, aiText, actualProvider, actualModel, aiTime, aiTime);
+
+      db.prepare(`
+        INSERT INTO messages_fts (content, conversation_id, message_id, role, timestamp)
+        VALUES (?, ?, ?, 'assistant', ?)
+      `).run(aiText, convId, aiMsgId, aiTime);
+
+      aiResponse = {
+        id: aiMsgId,
+        conversation_id: convId,
+        role: 'assistant',
+        post_type: 'ai_analysis',
+        content: aiText,
+        status: 'completed',
+        provider: actualProvider,
+        model: actualModel,
+        timestamp: aiTime,
+        attachments: []
+      };
+    } else if (mode === 'google_search') {
+      if (!apiKey) {
+        throw new Error('Google Gemini API Key is required for Google Cloud Search AI grounding. Please configure it in Settings.');
+      }
+
+      const targetGeminiModel = (typeof model === 'string' && model.startsWith('gemini-')) ? model : 'gemini-3.8-flash';
+      const searchResult = await providerRouter.googleSearchAI({
+        query: cleanContent,
+        images: postImages,
+        model: targetGeminiModel,
+        apiKey
+      });
+
+      const aiMsgId = uuidv4();
+      const aiTime = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
+        VALUES (?, ?, 'assistant', 'google_search', ?, 'completed', 'gemini', ?, ?, ?)
+      `).run(aiMsgId, convId, searchResult.summary, searchResult.model || targetGeminiModel, aiTime, aiTime);
+
+      db.prepare(`
+        INSERT INTO messages_fts (content, conversation_id, message_id, role, timestamp)
+        VALUES (?, ?, ?, 'assistant', ?)
+      `).run(searchResult.summary, convId, aiMsgId, aiTime);
+
+      aiResponse = {
+        id: aiMsgId,
+        conversation_id: convId,
+        role: 'assistant',
+        post_type: 'google_search',
+        content: searchResult.summary,
+        status: 'completed',
+        provider: 'gemini',
+        model: searchResult.model || targetGeminiModel,
+        timestamp: aiTime,
+        attachments: []
+      };
+    }
+  } catch (err) {
+    console.error(`[Post Processing Error (${mode})]:`, err.message);
+    const errId = uuidv4();
+    const errTime = new Date().toISOString();
+
+    const currentProvider = provider || conversation?.default_provider || 'gemini';
+    const currentModel = model || conversation?.default_model || (currentProvider === 'gemini' ? 'gemini-3.8-flash' : 'local-model');
+    const isLocal = currentProvider === 'ollama' || currentProvider === 'lmstudio';
+
+    let errorText;
+    if (isLocal && mode === 'ai_analysis') {
+      errorText = `🔒 Local AI Model Unavailable: ${err.message}`;
+    } else {
+      errorText = `⚠️ Error generating ${mode === 'google_search' ? 'Google Cloud Search' : 'Archive Analysis'}: ${err.message}`;
+    }
+
+    db.prepare(`
+      INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
+      VALUES (?, ?, 'assistant', ?, ?, 'error', ?, ?, ?, ?)
+    `).run(errId, convId, mode, errorText, currentProvider, currentModel, errTime, errTime);
+
+    aiResponse = {
+      id: errId,
+      conversation_id: convId,
+      role: 'assistant',
+      post_type: mode,
+      content: errorText,
+      status: 'error',
+      provider: currentProvider,
+      model: currentModel,
+      timestamp: errTime,
+      attachments: []
+    };
+  }
+
+  res.json({
+    conversationId: convId,
+    conversationTitle: conversation.title,
+    userMessage,
+    aiResponse
+  });
 });
 
 // Direct message creation into a conversation
@@ -134,9 +476,9 @@ app.post('/api/conversations/:id/messages', (req, res) => {
   const now = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO messages (id, conversation_id, role, content, status, provider, model, timestamp, updated_at)
-    VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?)
-  `).run(msgId, id, role, content, provider, model, now, now);
+    INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)
+  `).run(msgId, id, role, role === 'user' ? 'user' : 'standard', content, provider, model, now, now);
 
   db.prepare(`
     INSERT INTO messages_fts (content, conversation_id, message_id, role, timestamp)

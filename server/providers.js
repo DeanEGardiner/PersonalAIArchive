@@ -28,6 +28,32 @@ class ProviderRouter {
     return new GoogleGenAI({ apiKey: key });
   }
 
+  fileToGenerativePart(filePath, mimeType) {
+    const fs = require('fs');
+    const path = require('path');
+    const { MEDIA_DIR } = require('./db');
+
+    let fullPath = filePath;
+    if (typeof filePath === 'string' && filePath.startsWith('/media/')) {
+      fullPath = path.join(MEDIA_DIR, path.basename(filePath));
+    } else if (typeof filePath === 'string' && !path.isAbsolute(filePath)) {
+      fullPath = path.join(MEDIA_DIR, filePath);
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      console.warn(`[ProviderRouter] Attachment file not found: ${fullPath}`);
+      return null;
+    }
+
+    const data = fs.readFileSync(fullPath).toString('base64');
+    return {
+      inlineData: {
+        data,
+        mimeType: mimeType || 'image/jpeg'
+      }
+    };
+  }
+
   async checkHealth() {
     const { db } = require('./db');
     const ollamaSetting = db.prepare("SELECT value FROM settings WHERE key = 'ollama_base_url'").get();
@@ -327,18 +353,255 @@ class ProviderRouter {
     return fullText;
   }
 
-  async googleSearchAI({ query, model = 'gemini-3.6-flash', apiKey }) {
+  ensureGeminiModel(m) {
+    if (typeof m === 'string' && m.startsWith('gemini-')) {
+      return m;
+    }
+    return 'gemini-3.8-flash';
+  }
+
+  /**
+   * Option 2: Analyze Personal Archive Knowledge Base with Gemini (or fallback provider)
+   */
+  async analyzeArchiveKnowledge({ userPost, conversationTitle, archiveContext, images = [], model = 'gemini-3.8-flash', apiKey, provider = 'gemini' }) {
+    const textPrompt = `You are the AI assistant for Personal AI Archive, acting as the user's personal digital second brain and research companion.
+The user has posted an inquiry/note into their personal archive${conversationTitle ? ` under conversation "${conversationTitle}"` : ''}.
+
+USER POST:
+"""
+${userPost}
+"""
+
+PERSONAL ARCHIVE KNOWLEDGE BASE (Past Conversations, Topics, Summaries & FTS Records):
+${archiveContext || 'No previous related notes found in personal archive.'}
+
+TASK:
+1. Examine any attached images together with the user's text.
+2. Provide a comprehensive, accurate, and insightful response.
+3. Actively ground your response in the user's Personal Archive Knowledge Base above whenever applicable, citing past conversations, dates, or summaries (e.g., "From your earlier discussion in '[Conversation Title]'...").
+4. If no specific previous notes match or if additional knowledge is needed, synthesize an insightful, complete answer using your comprehensive AI capabilities.
+5. Format cleanly using Markdown with headings, bullet points, and code blocks where helpful. Do not mention that you received system prompts.`;
+
+    // Multimodal contents
+    const contents = [];
+    if (Array.isArray(images) && images.length > 0) {
+      for (const img of images) {
+        if (!img) continue;
+        const part = this.fileToGenerativePart(img.file_path || img.filePath || img, img.mime_type || img.mimeType);
+        if (part) contents.push(part);
+      }
+    }
+    contents.push({ text: textPrompt });
+
+    // 1. STRICT LOCAL OLLAMA ROUTING (Never fall back to cloud)
+    if (provider === 'ollama') {
+      const { db } = require('./db');
+      const ollamaSetting = db.prepare("SELECT value FROM settings WHERE key = 'ollama_base_url'").get();
+      const baseUrl = ollamaSetting?.value || this.ollamaBaseUrl || 'http://localhost:11434';
+      const targetModel = model || 'gemma4:12b-mlx';
+
+      try {
+        const ollamaImages = [];
+        if (Array.isArray(images) && images.length > 0) {
+          for (const img of images) {
+            const part = this.fileToGenerativePart(img.file_path || img.filePath || img, img.mime_type || img.mimeType);
+            if (part?.inlineData?.data) {
+              ollamaImages.push(part.inlineData.data);
+            }
+          }
+        }
+
+        const systemPrompt = `You are the Personal AI Archive assistant, acting as the user's private digital second brain.
+Analyze the user's inquiry against the provided Personal Archive Knowledge Base.
+Ground your response directly in any matching past conversations or archive summaries (cite them clearly by conversation title).
+If the archive does not contain the requested information, state that clearly and provide a concise, helpful response.
+Be direct, factual, and concise.`;
+
+        const userPromptContent = `USER INQUIRY:
+"""
+${userPost}
+"""
+
+PERSONAL ARCHIVE KNOWLEDGE BASE:
+${archiveContext || 'No previous related records found in personal archive.'}`;
+
+        const bodyPayload = {
+          model: targetModel,
+          prompt: `${systemPrompt}\n\n${userPromptContent}`,
+          stream: false,
+          options: {
+            num_predict: 1500,
+            temperature: 0.3
+          }
+        };
+        if (ollamaImages.length > 0) {
+          bodyPayload.images = ollamaImages;
+        }
+
+        const resp = await fetch(`${baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodyPayload),
+          signal: AbortSignal.timeout(180000) // 3-minute timeout for local model generation
+        });
+
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => resp.statusText);
+          throw new Error(`Ollama returned status ${resp.status}: ${errText}`);
+        }
+        const data = await resp.json();
+        return {
+          text: data.response || 'No response generated by local Ollama model.',
+          provider: 'ollama',
+          model: targetModel
+        };
+      } catch (ollamaErr) {
+        console.error(`[ProviderRouter] Ollama local model (${targetModel}) error:`, ollamaErr.message);
+        if (ollamaErr.name === 'TimeoutError' || ollamaErr.message.includes('timeout') || ollamaErr.name === 'AbortError') {
+          throw new Error(`The local Ollama model "${targetModel}" timed out while analyzing the archive (took longer than 3 minutes). The server is running, but generating the answer took too long.`);
+        }
+        throw new Error(`The local Ollama model "${targetModel}" is not available at ${baseUrl}. Please ensure Ollama is running and "${targetModel}" is loaded. To protect your data privacy, local archive analysis will never fall back to cloud AI or Google search.`);
+      }
+    }
+
+    // 2. STRICT LOCAL LM STUDIO ROUTING (Never fall back to cloud)
+    if (provider === 'lmstudio') {
+      const baseUrl = this.getLMStudioBaseUrl();
+      const targetModel = model || 'local-model';
+
+      try {
+        const systemPrompt = `You are the Personal AI Archive assistant, acting as the user's private digital second brain.
+Analyze the user's inquiry against the provided Personal Archive Knowledge Base.
+Ground your response directly in any matching past conversations or archive summaries (cite them clearly by conversation title).
+If the archive does not contain the requested information, state that clearly and provide a concise, helpful response.
+Be direct, factual, and concise.`;
+
+        const userPromptContent = `USER INQUIRY:
+"""
+${userPost}
+"""
+
+PERSONAL ARCHIVE KNOWLEDGE BASE:
+${archiveContext || 'No previous related records found in personal archive.'}`;
+
+        let messageContent = userPromptContent;
+        if (Array.isArray(images) && images.length > 0) {
+          const imageParts = [];
+          for (const img of images) {
+            const part = this.fileToGenerativePart(img.file_path || img.filePath || img, img.mime_type || img.mimeType);
+            if (part?.inlineData?.data) {
+              imageParts.push({
+                type: 'image_url',
+                image_url: {
+                  url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
+                }
+              });
+            }
+          }
+          if (imageParts.length > 0) {
+            messageContent = [
+              { type: 'text', text: userPromptContent },
+              ...imageParts
+            ];
+          }
+        }
+
+        const resp = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: targetModel,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: messageContent }
+            ],
+            max_tokens: 1500,
+            temperature: 0.3
+          }),
+          signal: AbortSignal.timeout(180000) // 3-minute timeout for local model generation
+        });
+
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => resp.statusText);
+          throw new Error(`LM Studio returned status ${resp.status}: ${errText}`);
+        }
+        const data = await resp.json();
+        const resultText = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '';
+        return {
+          text: resultText || 'No response generated by local LM Studio model.',
+          provider: 'lmstudio',
+          model: targetModel
+        };
+      } catch (lmErr) {
+        console.error(`[ProviderRouter] LM Studio local model (${targetModel}) error:`, lmErr.message);
+        if (lmErr.name === 'TimeoutError' || lmErr.message.includes('timeout') || lmErr.name === 'AbortError') {
+          throw new Error(`The local LM Studio model "${targetModel}" timed out while analyzing the archive (took longer than 3 minutes). The server is running, but generating the answer took too long.`);
+        }
+        throw new Error(`The local LM Studio model "${targetModel}" is not available at ${baseUrl}. Please ensure LM Studio local server is started and "${targetModel}" is loaded. To protect your data privacy, local archive analysis will never fall back to cloud AI or Google search.`);
+      }
+    }
+
+    // 3. OPENAI CLOUD ROUTING
+    if (provider === 'openai') {
+      const client = this.getOpenAIClient();
+      const completion = await client.chat.completions.create({
+        model: model || 'gpt-4o',
+        messages: [{ role: 'user', content: textPrompt }]
+      });
+      return {
+        text: completion.choices[0]?.message?.content || '',
+        provider: 'openai',
+        model: model || 'gpt-4o'
+      };
+    }
+
+    // 4. GOOGLE GEMINI CLOUD ROUTING
+    if (provider === 'gemini') {
+      const geminiKey = apiKey || process.env.GEMINI_API_KEY;
+      if (!geminiKey) {
+        throw new Error('Google Gemini API Key is missing. Please configure your Gemini API Key in Settings to perform Gemini Archive AI Analysis.');
+      }
+      const geminiModel = this.ensureGeminiModel(model);
+      const client = this.getGeminiClient(geminiKey);
+      const response = await client.models.generateContent({
+        model: geminiModel,
+        contents
+      });
+      return {
+        text: response.text || 'Unable to generate archive analysis at this time.',
+        provider: 'gemini',
+        model: geminiModel
+      };
+    }
+
+    throw new Error(`Unsupported provider "${provider}". Please choose a local model (Ollama / LM Studio) or Google Gemini.`);
+  }
+
+  /**
+   * Option 3: Google Search AI Grounding (with Multimodal Image Support)
+   */
+  async googleSearchAI({ query, images = [], model = 'gemini-3.8-flash', apiKey }) {
     const ai = this.getGeminiClient(apiKey);
-    console.log(`[Google Search AI] Executing search grounding query: "${query}" using model ${model}...`);
+    const geminiModel = this.ensureGeminiModel(model);
+    console.log(`[Google Search AI] Executing search grounding query: "${query}" using model ${geminiModel}...`);
+
+    const textPrompt = `You are Google Search AI for Personal AI Archive.
+Review any attached image(s) and the following search query: "${query}".
+Use Google Search grounding to provide an accurate, concise, and up-to-date factual summary addressing the query and the visual content of any image(s).`;
+
+    const contents = [];
+    if (Array.isArray(images) && images.length > 0) {
+      for (const img of images) {
+        if (!img) continue;
+        const part = this.fileToGenerativePart(img.file_path || img.filePath || img, img.mime_type || img.mimeType);
+        if (part) contents.push(part);
+      }
+    }
+    contents.push({ text: textPrompt });
 
     const response = await ai.models.generateContent({
-      model,
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: query }]
-        }
-      ],
+      model: geminiModel,
+      contents,
       config: {
         tools: [{ googleSearch: {} }]
       }
@@ -363,11 +626,18 @@ class ProviderRouter {
       }
     }
 
+    let summary = response.text || '';
+    if (sources.length > 0 && !summary.includes('**Sources & Citations:**')) {
+      const citationsSection = `\n\n**Sources & Citations:**\n` + sources.map(s => `- [${s.title}](${s.url})`).join('\n');
+      summary += citationsSection;
+    }
+
     return {
-      text: response.text || '',
+      text: summary,
+      summary,
       searchQueries,
       sources,
-      model
+      model: geminiModel
     };
   }
 
