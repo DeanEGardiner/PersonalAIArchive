@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import ArchiveView from './components/ArchiveView';
 import SummaryView from './components/SummaryView';
+import ObsidianNotesView from './components/ObsidianNotesView';
 import SettingsModal from './components/SettingsModal';
 import GoogleSearchModal from './components/GoogleSearchModal';
 import { api } from './api';
@@ -142,7 +143,7 @@ export default function App() {
   };
 
   // Chat message sending with live SSE streaming
-  const handleSendMessage = async ({ text, injectContext, contextMode, categoryIds }) => {
+  const handleSendMessage = async ({ text }) => {
     if (isStreaming) return;
 
     // Optimistically append user message to local state
@@ -174,9 +175,6 @@ export default function App() {
         message: text,
         provider: selectedProvider,
         model: selectedModel,
-        injectContext,
-        contextMode,
-        categoryIds,
         abortSignal: abortController.signal,
         onChunk: (chunk) => {
           accumulatedText += chunk;
@@ -275,6 +273,13 @@ export default function App() {
   // Google Search AI Integration Handlers
   const handleInsertIntoComposer = (text) => {
     setExternalInputText(text);
+    setCurrentView('chat');
+  };
+
+  const handleStartChatWithNote = (note) => {
+    const promptText = `Let's discuss and analyze my Obsidian note "${note.title}":\n\n${note.content || note.preview}`;
+    setExternalInputText(promptText);
+    handleNewConversation();
     setCurrentView('chat');
   };
 
@@ -438,7 +443,6 @@ export default function App() {
             setSelectedProvider={setSelectedProvider}
             selectedModel={selectedModel}
             setSelectedModel={setSelectedModel}
-            categories={categories}
             onOpenGoogleSearch={() => setIsGoogleSearchOpen(true)}
             externalInputText={externalInputText}
             setExternalInputText={setExternalInputText}
@@ -463,6 +467,13 @@ export default function App() {
             categories={categories}
             onRefreshSummaries={loadSummaries}
             providerHealth={providerHealth}
+          />
+        )}
+
+        {currentView === 'obsidian' && (
+          <ObsidianNotesView 
+            onInsertIntoComposer={handleInsertIntoComposer}
+            onStartChatWithNote={handleStartChatWithNote}
           />
         )}
       </main>

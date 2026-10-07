@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, Server, Check } from 'lucide-react';
+import { X, Key, Server, Check, FolderSync } from 'lucide-react';
 import { api } from '../api';
 
 export default function SettingsModal({ isOpen, onClose, onSaved }) {
@@ -7,6 +7,8 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
   const [openAiKey, setOpenAiKey] = useState('');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [lmStudioUrl, setLmStudioUrl] = useState('http://localhost:1234/v1');
+  const [obsidianVaultPath, setObsidianVaultPath] = useState('/Users/deangardiner/Documents/DeanGVault');
+  const [obsidianStatus, setObsidianStatus] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
@@ -23,9 +25,23 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
       if (s.openai_api_key) setOpenAiKey(s.openai_api_key);
       if (s.ollama_base_url) setOllamaUrl(s.ollama_base_url);
       if (s.lmstudio_base_url) setLmStudioUrl(s.lmstudio_base_url);
+      if (s.obsidian_vault_path) setObsidianVaultPath(s.obsidian_vault_path);
+
+      const obsStatus = await api.getObsidianStatus().catch(() => null);
+      if (obsStatus) {
+        setObsidianStatus(obsStatus);
+        if (obsStatus.vaultPath) setObsidianVaultPath(obsStatus.vaultPath);
+      }
     } catch (e) {
       console.error('Failed to load settings:', e);
     }
+  };
+
+  const checkVaultPath = async (val) => {
+    try {
+      const updated = await api.updateObsidianVaultPath(val);
+      setObsidianStatus(updated);
+    } catch (_) {}
   };
 
   const handleSave = async () => {
@@ -37,6 +53,7 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
         ollama_base_url: ollamaUrl,
         lmstudio_base_url: lmStudioUrl
       });
+      await api.updateObsidianVaultPath(obsidianVaultPath);
       setSavedSuccess(true);
       setTimeout(() => {
         setSavedSuccess(false);
@@ -117,6 +134,43 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
               value={lmStudioUrl}
               onChange={(e) => setLmStudioUrl(e.target.value)}
             />
+          </div>
+
+          <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '18px 0' }} />
+
+          <div className="form-group">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <FolderSync size={15} color="var(--accent-primary)" />
+                <span>Obsidian Vault Root Directory</span>
+              </label>
+              {obsidianStatus && (
+                <span style={{ 
+                  fontSize: '11px', 
+                  padding: '2px 8px', 
+                  borderRadius: '12px',
+                  fontWeight: 500,
+                  background: obsidianStatus.isValid ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  color: obsidianStatus.isValid ? 'var(--success)' : 'var(--error)',
+                  border: `1px solid ${obsidianStatus.isValid ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                }}>
+                  {obsidianStatus.isValid ? `✓ Vault Valid (${obsidianStatus.diskNoteCount} notes)` : '⚠️ Path Not Found'}
+                </span>
+              )}
+            </div>
+            <input 
+              type="text"
+              className="form-input"
+              placeholder="/Users/deangardiner/Documents/DeanGVault"
+              value={obsidianVaultPath}
+              onChange={(e) => {
+                setObsidianVaultPath(e.target.value);
+                checkVaultPath(e.target.value);
+              }}
+            />
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              Absolute path to your local Obsidian vault. Sync will create an <code>AI Archive</code> folder inside this vault.
+            </span>
           </div>
         </div>
 

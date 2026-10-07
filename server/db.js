@@ -102,6 +102,27 @@ function initSchema() {
       role UNINDEXED,
       timestamp UNINDEXED
     );
+
+    -- Dedicated Obsidian Vault Notes Table
+    CREATE TABLE IF NOT EXISTS obsidian_notes (
+      id TEXT PRIMARY KEY,
+      file_name TEXT NOT NULL,
+      rel_path TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      checksum TEXT NOT NULL,
+      mtime_ms INTEGER NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Dedicated FTS5 Virtual Table for Obsidian Notes
+    CREATE VIRTUAL TABLE IF NOT EXISTS obsidian_notes_fts USING fts5(
+      title,
+      content,
+      rel_path UNINDEXED,
+      note_id UNINDEXED
+    );
   `);
 
   // Ensure post_type column exists on messages table for new and existing databases
@@ -119,6 +140,12 @@ function initSchema() {
   }
   if (!checkSetting.get('summarizer_provider')) {
     db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('summarizer_provider', 'ollama');
+  }
+  if (!checkSetting.get('obsidian_vault_path')) {
+    db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('obsidian_vault_path', '/Users/deangardiner/Documents/DeanGVault');
+  }
+  if (!checkSetting.get('obsidian_last_sync')) {
+    db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('obsidian_last_sync', '');
   }
 }
 

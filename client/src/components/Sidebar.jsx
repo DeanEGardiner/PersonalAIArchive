@@ -6,7 +6,8 @@ import {
   Settings, 
   Trash2, 
   Bot,
-  Circle
+  Circle,
+  BookOpen
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -73,12 +74,28 @@ export default function Sidebar({
           <span>New Conversation</span>
         </button>
         <button 
-          className="btn-google-search-sidebar" 
-          onClick={onOpenGoogleSearch}
-          title="Search Google with AI Overviews and insert into chats"
+          className={`btn-obsidian-sidebar ${currentView === 'obsidian' ? 'active' : ''}`}
+          onClick={() => setCurrentView('obsidian')}
+          title="Search, browse, and sync your Obsidian Vault notes"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            padding: '9px 14px',
+            borderRadius: '8px',
+            background: currentView === 'obsidian' ? 'rgba(168, 85, 247, 0.22)' : 'rgba(168, 85, 247, 0.1)',
+            border: `1px solid ${currentView === 'obsidian' ? 'rgba(168, 85, 247, 0.55)' : 'rgba(168, 85, 247, 0.25)'}`,
+            color: '#d8b4fe',
+            fontWeight: 600,
+            fontSize: '13px',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            boxShadow: currentView === 'obsidian' ? '0 0 12px rgba(168, 85, 247, 0.3)' : 'none'
+          }}
         >
-          <span className="google-g-icon">G</span>
-          <span>Google Search AI</span>
+          <BookOpen size={16} color="#c084fc" />
+          <span>Obsidian Notes</span>
         </button>
       </div>
 

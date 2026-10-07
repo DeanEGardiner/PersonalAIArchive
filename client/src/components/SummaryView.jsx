@@ -19,6 +19,23 @@ export default function SummaryView({ summaries, categories, onRefreshSummaries,
   const [genProvider, setGenProvider] = useState('gemini');
   const [genModel, setGenModel] = useState('gemini-3.6-flash');
   const [errorMsg, setErrorMsg] = useState(null);
+  const [isSyncingObsidian, setIsSyncingObsidian] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState(null);
+
+  const handleSyncObsidian = async () => {
+    if (isSyncingObsidian) return;
+    setIsSyncingObsidian(true);
+    setSyncFeedback(null);
+    try {
+      const res = await api.syncObsidian();
+      setSyncFeedback(`Synced! (+${res.importedCount} in, ${res.exportedCount} out)`);
+      setTimeout(() => setSyncFeedback(null), 5000);
+    } catch (err) {
+      alert('Obsidian Sync Failed: ' + err.message);
+    } finally {
+      setIsSyncingObsidian(false);
+    }
+  };
 
   // Sync default model when provider or providerHealth changes
   useEffect(() => {
@@ -121,15 +138,36 @@ export default function SummaryView({ summaries, categories, onRefreshSummaries,
             <span>{isGenerating ? 'Analyzing Archive...' : 'Generate Digest'}</span>
           </button>
 
+          <button 
+            onClick={handleSyncObsidian}
+            disabled={isSyncingObsidian}
+            className="btn-secondary"
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              background: 'rgba(168, 85, 247, 0.15)',
+              borderColor: 'rgba(168, 85, 247, 0.35)',
+              color: '#d8b4fe',
+              fontWeight: 600,
+              fontSize: '13px',
+              cursor: isSyncingObsidian ? 'not-allowed' : 'pointer'
+            }}
+            title="Two-way sync with local Obsidian Vault (DeanGVault)"
+          >
+            <RefreshCw size={14} className={isSyncingObsidian ? 'animate-spin' : ''} />
+            <span>{isSyncingObsidian ? 'Syncing...' : syncFeedback || 'Sync Obsidian'}</span>
+          </button>
+
           <a 
             href="/api/export/markdown" 
             download="Personal_AI_Archive_Obsidian_Vault.zip"
             className="btn-secondary"
             style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}
-            title="Download all summaries and conversations in an Obsidian Vault (.zip)"
+            title="Download full backup zip of all archive notes"
           >
             <Download size={14} />
-            <span>Obsidian Vault (.zip)</span>
+            <span>Vault (.zip)</span>
           </a>
         </div>
       </div>

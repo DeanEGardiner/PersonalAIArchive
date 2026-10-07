@@ -3,13 +3,11 @@ import {
   Send, 
   Square, 
   Sparkles, 
-  Database, 
   Cpu, 
   Clock, 
   ChevronDown,
   Info,
   Tag,
-  SlidersHorizontal,
   Lock,
   Globe,
   Paperclip,
@@ -17,7 +15,6 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { api } from '../api';
-import TopicSelectionModal from './TopicSelectionModal';
 import FormattedText from './FormattedText';
 
 export default function ChatView({
@@ -33,7 +30,6 @@ export default function ChatView({
   setSelectedProvider,
   selectedModel,
   setSelectedModel,
-  categories,
   onOpenGoogleSearch,
   externalInputText,
   setExternalInputText,
@@ -45,10 +41,6 @@ export default function ChatView({
   const [postMode, setPostMode] = useState('standard'); // 'standard' | 'ai_analysis' | 'google_search'
   const [attachedImage, setAttachedImage] = useState(null);
   const [uploadingImage, setUploadingImage] = useState(false);
-  const [injectContext, setInjectContext] = useState(false);
-  const [contextMode, setContextMode] = useState('summary'); // 'summary' | 'categories' | 'hybrid'
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState([]);
-  const [isTopicModalOpen, setIsTopicModalOpen] = useState(false);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -129,10 +121,7 @@ export default function ChatView({
       }
     } else {
       onSendMessage({
-        text: inputText,
-        injectContext,
-        contextMode,
-        categoryIds: selectedCategoryIds
+        text: inputText
       });
       setInputText('');
       if (textareaRef.current) {
@@ -238,113 +227,8 @@ export default function ChatView({
             <Globe size={14} color="#a855f7" />
             <span>Google Search AI</span>
           </button>
-
-          {/* Context Injection Control Toggle */}
-          <button 
-            className={`context-toggle-btn ${injectContext ? 'active' : ''}`}
-            onClick={() => setInjectContext(!injectContext)}
-            title="Inject archive summaries & past discussions as contextual memory"
-          >
-            <Database size={14} />
-            <span>Archive Memory: {injectContext ? 'ON' : 'OFF'}</span>
-          </button>
         </div>
       </div>
-
-      {/* Context Injection Sub-bar (shows if enabled) */}
-      {injectContext && (
-        <div className="context-banner">
-          <span style={{ fontWeight: 600, color: 'var(--accent-primary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Sparkles size={14} /> Retrieval Mode:
-          </span>
-          <div className="context-modes">
-            <button 
-              className={`context-mode-btn ${contextMode === 'summary' ? 'selected' : ''}`}
-              onClick={() => setContextMode('summary')}
-            >
-              Latest Summaries
-            </button>
-            <button 
-              className={`context-mode-btn ${contextMode === 'categories' ? 'selected' : ''}`}
-              onClick={() => {
-                setContextMode('categories');
-                setIsTopicModalOpen(true);
-              }}
-              title="Open window to choose knowledge topics for retrieval"
-              style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-            >
-              <span>Selected Topics</span>
-              {selectedCategoryIds.length > 0 && (
-                <span style={{ 
-                  background: contextMode === 'categories' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(139, 92, 246, 0.3)',
-                  padding: '1px 6px',
-                  borderRadius: '10px',
-                  fontSize: '10px',
-                  fontWeight: 600
-                }}>
-                  {selectedCategoryIds.length}
-                </span>
-              )}
-            </button>
-            <button 
-              className={`context-mode-btn ${contextMode === 'hybrid' ? 'selected' : ''}`}
-              onClick={() => setContextMode('hybrid')}
-            >
-              Smart Keyword FTS
-            </button>
-          </div>
-
-          {contextMode === 'categories' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '6px' }}>
-              <button
-                onClick={() => setIsTopicModalOpen(true)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '3px 10px',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  fontWeight: 500,
-                  background: 'rgba(139, 92, 246, 0.15)',
-                  border: '1px solid rgba(139, 92, 246, 0.4)',
-                  color: '#c4b5fd',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(139, 92, 246, 0.25)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(139, 92, 246, 0.15)'}
-                title="Click to open topic selection window"
-              >
-                <SlidersHorizontal size={12} />
-                <span>
-                  {selectedCategoryIds.length === 0 
-                    ? 'Click to Select Topics (None chosen)' 
-                    : `${selectedCategoryIds.length} topic${selectedCategoryIds.length === 1 ? '' : 's'} active — Edit`}
-                </span>
-              </button>
-
-              {selectedCategoryIds.length > 0 && (
-                <button
-                  onClick={() => setSelectedCategoryIds([])}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--text-muted)',
-                    fontSize: '11px',
-                    cursor: 'pointer',
-                    padding: '2px 4px',
-                    textDecoration: 'underline'
-                  }}
-                  title="Clear topic selection"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Message List */}
       <div className="messages-container">
@@ -812,14 +696,6 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Topic Selection Modal Window */}
-      <TopicSelectionModal 
-        isOpen={isTopicModalOpen}
-        onClose={() => setIsTopicModalOpen(false)}
-        categories={categories}
-        selectedCategoryIds={selectedCategoryIds}
-        onSelectionChange={setSelectedCategoryIds}
-      />
     </div>
   );
 }

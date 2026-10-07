@@ -8,7 +8,8 @@ import {
   Tag, 
   Cpu, 
   ExternalLink,
-  Filter
+  Filter,
+  RefreshCw
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
@@ -18,6 +19,23 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedProviderFilter, setSelectedProviderFilter] = useState('all');
+  const [isSyncingObsidian, setIsSyncingObsidian] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState(null);
+
+  const handleSyncObsidian = async () => {
+    if (isSyncingObsidian) return;
+    setIsSyncingObsidian(true);
+    setSyncFeedback(null);
+    try {
+      const res = await api.syncObsidian();
+      setSyncFeedback(`Synced! (+${res.importedCount} in, ${res.exportedCount} out)`);
+      setTimeout(() => setSyncFeedback(null), 5000);
+    } catch (err) {
+      alert('Obsidian Sync Failed: ' + err.message);
+    } finally {
+      setIsSyncingObsidian(false);
+    }
+  };
 
   // Trigger FTS5 search when query changes
   useEffect(() => {
@@ -54,15 +72,37 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
           <h2>Archive Explorer</h2>
           <p>Local SQLite FTS5 Full-Text Search, timeline inspector, and portability exports.</p>
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <button 
+            onClick={handleSyncObsidian}
+            disabled={isSyncingObsidian}
+            className="btn-primary"
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              background: 'linear-gradient(135deg, #a855f7 0%, #7c3aed 100%)',
+              border: 'none',
+              padding: '7px 14px',
+              borderRadius: '8px',
+              fontWeight: 600,
+              fontSize: '13px',
+              cursor: isSyncingObsidian ? 'not-allowed' : 'pointer'
+            }}
+            title="Two-way sync with local Obsidian Vault (DeanGVault)"
+          >
+            <RefreshCw size={14} className={isSyncingObsidian ? 'animate-spin' : ''} />
+            <span>{isSyncingObsidian ? 'Syncing...' : syncFeedback || 'Sync Obsidian'}</span>
+          </button>
           <a 
             href="/api/export/markdown" 
             download="Personal_AI_Archive_Obsidian_Vault.zip"
             className="btn-secondary"
             style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}
+            title="Download full backup zip of all archive notes"
           >
             <Download size={14} />
-            <span>Obsidian Vault (.zip)</span>
+            <span>Vault (.zip)</span>
           </a>
           <a 
             href="/api/export/json" 

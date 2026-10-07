@@ -62,9 +62,6 @@ export const api = {
     message,
     provider,
     model,
-    injectContext,
-    contextMode,
-    categoryIds,
     onChunk,
     onError,
     onDone,
@@ -77,10 +74,7 @@ export const api = {
         conversationId,
         message,
         provider,
-        model,
-        injectContext,
-        contextMode,
-        categoryIds
+        model
       }),
       signal: abortSignal
     });
@@ -237,6 +231,51 @@ export const api = {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || 'Failed to upload image');
     }
+    return res.json();
+  },
+
+  // Obsidian Vault Integration
+  async getObsidianStatus() {
+    const res = await fetch('/api/obsidian/status');
+    if (!res.ok) throw new Error('Failed to fetch Obsidian vault status');
+    return res.json();
+  },
+
+  async updateObsidianVaultPath(vaultPath) {
+    const res = await fetch('/api/obsidian/vault-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vaultPath })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to update Obsidian vault path');
+    }
+    return res.json();
+  },
+
+  async syncObsidian(vaultPath) {
+    const res = await fetch('/api/obsidian/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vaultPath })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to sync Obsidian vault');
+    }
+    return res.json();
+  },
+
+  async getObsidianNotes(query = '', limit = 100) {
+    const res = await fetch(`/api/obsidian/notes?q=${encodeURIComponent(query)}&limit=${limit}`);
+    if (!res.ok) throw new Error('Failed to fetch Obsidian notes');
+    return res.json();
+  },
+
+  async getObsidianNoteById(id) {
+    const res = await fetch(`/api/obsidian/notes/${id}`);
+    if (!res.ok) throw new Error('Failed to fetch note');
     return res.json();
   }
 };

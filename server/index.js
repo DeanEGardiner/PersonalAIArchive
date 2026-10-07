@@ -10,7 +10,7 @@ const multer = require('multer');
 const { db, SUMMARIES_DIR, MEDIA_DIR } = require('./db');
 const providerRouter = require('./providers');
 const summarizer = require('./summarizer');
-const contextInjector = require('./contextInjector');
+const obsidianSync = require('./obsidianSync');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -328,6 +328,24 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
           return `[Conversation: "${h.conversation_title}"] (${h.role}): ${snippet}`;
         }).join('\n\n'));
       }
+
+      // Query relevant Obsidian notes from synced vault
+      let obsidianHits = [];
+      try {
+        if (words.length > 0) {
+          obsidianHits = obsidianSync.searchNotes(words.join(' '), 3);
+        }
+      } catch (_) {}
+
+      if (obsidianHits.length > 0) {
+        contextParts.push(`### Relevant Obsidian Vault Notes:\n` + obsidianHits.map(n => {
+          const fullNote = obsidianSync.getNoteById(n.id);
+          const rawContent = fullNote?.content || n.preview || '';
+          const snippet = rawContent.length > 1000 ? rawContent.slice(0, 1000) + '... [truncated]' : rawContent;
+          return `[Obsidian Note: "${n.title}"] (${n.rel_path}):\n${snippet}`;
+        }).join('\n\n'));
+      }
+
       if (summaries.length > 0) {
         contextParts.push(`### Archive Summaries:\n` + summaries.map(s => {
           const sSnippet = s.summary_text.length > 600 ? s.summary_text.slice(0, 600) + '... [truncated]' : s.summary_text;
@@ -585,10 +603,7 @@ app.post(['/api/chat', '/api/chat/stream'], async (req, res) => {
     userMessage,
     message,
     provider = 'ollama', 
-    model = 'gemma4:12b-mlx', 
-    useArchiveData = false,
-    injectContext = false,
-    categoryIds = []
+    model = 'gemma4:12b-mlx'
   } = req.body;
 
   const actualMessage = userMessage || message;
@@ -620,7 +635,6 @@ app.post(['/api/chat', '/api/chat/stream'], async (req, res) => {
   console.log(`\n========================================`);
   console.log(`[Chat Request] Active Conv: ${activeConvId}, Provider: ${provider}, Model: ${model}`);
   console.log(`[Chat Request] Message: "${actualMessage.slice(0, 80)}${actualMessage.length > 80 ? '...' : ''}"`);
-  console.log(`[Chat Request] Archive Injection: ${useArchiveData || injectContext ? 'ON' : 'OFF'}`);
   console.log(`========================================`);
 
   // 1. Persist User Message Immediately
@@ -636,16 +650,7 @@ app.post(['/api/chat', '/api/chat/stream'], async (req, res) => {
     VALUES (?, ?, ?, 'user', ?)
   `).run(actualMessage, activeConvId, userMsgId, now);
 
-  // 2. Build Context if Archive Data checkbox is enabled
-  let systemPrompt = null;
-  if (useArchiveData || injectContext) {
-    console.log(`[Chat Checkpoint] Building archive context for query...`);
-    systemPrompt = contextInjector.buildContext({
-      userQuery: actualMessage,
-      categoryIds
-    });
-    console.log(`[Chat Checkpoint] Archive context built. Size: ${systemPrompt ? systemPrompt.length : 0} chars`);
-  }
+  const systemPrompt = null;
 
   // 3. Prepare Chat History
   const history = db.prepare(`
@@ -1026,6 +1031,62 @@ app.get('/api/export/json', (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="personal_ai_archive_backup.json"');
   res.setHeader('Content-Type', 'application/json');
   res.send(JSON.stringify({ conversations, messages, categories, summaries, exported_at: new Date().toISOString() }, null, 2));
+});
+
+// -------------------------------------------------------------
+// Obsidian Vault Integration Endpoints
+// -------------------------------------------------------------
+app.get('/api/obsidian/status', (req, res) => {
+  try {
+    const status = obsidianSync.getStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/obsidian/vault-path', (req, res) => {
+  try {
+    const { vaultPath } = req.body;
+    obsidianSync.setVaultPath(vaultPath);
+    const status = obsidianSync.getStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/obsidian/sync', async (req, res) => {
+  try {
+    const { vaultPath } = req.body || {};
+    const result = await obsidianSync.sync(vaultPath);
+    res.json(result);
+  } catch (err) {
+    console.error('[Obsidian Sync Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/obsidian/notes', (req, res) => {
+  try {
+    const { q = '', limit = 100 } = req.query;
+    const notes = obsidianSync.searchNotes(q, parseInt(limit, 10) || 100);
+    res.json(notes);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/obsidian/notes/:id', (req, res) => {
+  try {
+    const note = obsidianSync.getNoteById(req.params.id);
+    if (!note) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    res.json(note);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // -------------------------------------------------------------
