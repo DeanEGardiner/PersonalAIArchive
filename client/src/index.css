@@ -827,49 +827,7 @@ body {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
-/* Chat Header Google Search Button */
-.btn-google-search-chat {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  background: rgba(139, 92, 246, 0.1);
-  border: 1px solid rgba(139, 92, 246, 0.3);
-  color: #d8b4fe;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
 
-.btn-google-search-chat:hover {
-  background: rgba(139, 92, 246, 0.22);
-  border-color: rgba(139, 92, 246, 0.55);
-  color: #fff;
-  transform: translateY(-1px);
-}
-
-/* Composer quick search button */
-.btn-composer-search-ai {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.btn-composer-search-ai:hover {
-  background: rgba(139, 92, 246, 0.2);
-  border-color: rgba(139, 92, 246, 0.4);
-  color: #c084fc;
-}
 
 /* Google Search Modal Container */
 .google-search-modal-card {

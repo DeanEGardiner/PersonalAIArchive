@@ -30,7 +30,6 @@ export default function ChatView({
   setSelectedProvider,
   selectedModel,
   setSelectedModel,
-  onOpenGoogleSearch,
   externalInputText,
   setExternalInputText,
   onSummarizeUrl,
@@ -217,17 +216,6 @@ export default function ChatView({
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {/* Google Search AI Action Button */}
-          <button 
-            className="btn-google-search-chat"
-            onClick={onOpenGoogleSearch}
-            title="Search Google with AI Overviews and insert findings directly into this thread"
-          >
-            <Globe size={14} color="#a855f7" />
-            <span>Google Search AI</span>
-          </button>
-        </div>
       </div>
 
       {/* Message List */}
@@ -550,16 +538,6 @@ export default function ChatView({
               title="Attach and embed image in post"
             >
               <Paperclip size={16} />
-            </button>
-
-            {/* Google Search AI Modal Trigger */}
-            <button
-              type="button"
-              className="btn-composer-search-ai"
-              onClick={onOpenGoogleSearch}
-              title="Search Google AI and insert findings into this message"
-            >
-              <Globe size={15} />
             </button>
           </div>
         </div>

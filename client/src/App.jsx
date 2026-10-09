@@ -443,7 +443,6 @@ export default function App() {
             setSelectedProvider={setSelectedProvider}
             selectedModel={selectedModel}
             setSelectedModel={setSelectedModel}
-            onOpenGoogleSearch={() => setIsGoogleSearchOpen(true)}
             externalInputText={externalInputText}
             setExternalInputText={setExternalInputText}
             onSummarizeUrl={handleSummarizeUrlToThread}
