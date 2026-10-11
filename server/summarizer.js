@@ -3,18 +3,15 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { db, SUMMARIES_DIR } = require('./db');
 const providerRouter = require('./providers');
+const config = require('./config');
 
 class SummarizerService {
   getSummarizerConfig() {
-    const settingOnlyPrivate = db.prepare('SELECT value FROM settings WHERE key = ?').get('only_private_ai_summarization');
-    const settingModel = db.prepare('SELECT value FROM settings WHERE key = ?').get('summarizer_model');
-    const settingProvider = db.prepare('SELECT value FROM settings WHERE key = ?').get('summarizer_provider');
+    const onlyPrivate = config.getSetting('only_private_ai_summarization') === 'true';
+    let provider = config.getSetting('summarizer_provider') || 'ollama';
+    let model = config.getSetting('summarizer_model') || config.DEFAULT_MODELS.ollama;
 
-    const onlyPrivate = settingOnlyPrivate?.value === 'true';
-    let provider = settingProvider?.value || 'ollama';
-    let model = settingModel?.value || 'gemma4:12b-mlx';
-
-    if (onlyPrivate && provider !== 'ollama' && provider !== 'lmstudio') {
+    if (onlyPrivate && !config.isLocalProvider(provider)) {
       provider = 'ollama';
     }
 
@@ -43,36 +40,17 @@ class SummarizerService {
   }
 
   async runSummarization({ mode = 'incremental', overrideProvider, overrideModel, apiKey }) {
-    const config = this.getSummarizerConfig();
-    const provider = overrideProvider || config.provider || 'gemini';
+    const summarizerConfig = this.getSummarizerConfig();
+    let provider = overrideProvider || summarizerConfig.provider;
 
-    // Intelligently select default model for provider if not explicitly specified
-    let model = overrideModel;
-    if (!model) {
-      if (provider === 'gemini') {
-        model = 'gemini-3.6-flash';
-      } else if (provider === 'openai') {
-        model = 'gpt-4o-mini';
-      } else if (provider === 'lmstudio') {
-        model = 'qwen/qwen3.8-27b';
-      } else if (provider === 'ollama') {
-        model = config.model || 'gemma4:12b-mlx';
-      } else {
-        model = config.model;
-      }
+    // Enforce privacy constraint
+    if (summarizerConfig.onlyPrivate && !config.isLocalProvider(provider)) {
+      console.warn(`[Summarizer] Only private AI summarization is enabled. Forcing local provider instead of '${provider}'.`);
+      provider = 'ollama';
     }
 
-    // Resolve API key from settings if not passed
-    let resolvedApiKey = apiKey;
-    if (!resolvedApiKey) {
-      if (provider === 'gemini') {
-        const row = db.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").get();
-        resolvedApiKey = row?.value || process.env.GEMINI_API_KEY;
-      } else if (provider === 'openai') {
-        const row = db.prepare("SELECT value FROM settings WHERE key = 'openai_api_key'").get();
-        resolvedApiKey = row?.value || process.env.OPENAI_API_KEY;
-      }
-    }
+    const model = overrideModel || (provider === summarizerConfig.provider ? summarizerConfig.model : config.DEFAULT_MODELS[provider]);
+    const resolvedApiKey = apiKey || config.getApiKey(provider);
 
     // Fetch messages to process
     let messages = [];
@@ -158,27 +136,24 @@ ${conversationArchiveText}`;
         throw new Error('AI provider returned an empty response.');
       }
 
-      // 1. Strip reasoning/think tags (e.g. <think>...</think> from Qwen or DeepSeek)
+      // Strip think tags
       let cleaned = jsonResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-      // 2. Remove markdown code fences if present
+      // Remove markdown code fences if present
       const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
       if (fenceMatch && fenceMatch[1]) {
         cleaned = fenceMatch[1].trim();
       }
 
-      // 3. Find outermost JSON object
       const firstBrace = cleaned.indexOf('{');
       const lastBrace = cleaned.lastIndexOf('}');
       if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         cleaned = cleaned.substring(firstBrace, lastBrace + 1);
       }
 
-      // 4. Parse JSON
       try {
         resultData = JSON.parse(cleaned);
-      } catch (err1) {
-        // Fallback: remove trailing commas before closing braces/brackets
+      } catch (_) {
         const withoutTrailingCommas = cleaned.replace(/,\s*([}\]])/g, '$1');
         resultData = JSON.parse(withoutTrailingCommas);
       }
@@ -198,21 +173,25 @@ ${conversationArchiveText}`;
       };
     }
 
-    // Save Categories & Summaries to SQLite and Markdown Files
+    // Save Categories & Summaries to SQLite (with upsert/soft-delete of older versions)
     const now = new Date().toISOString();
+    const filesToWrite = [];
 
     db.transaction(() => {
-      // Global summary
+      // 1. Global summary
       if (resultData.global_summary) {
+        // Mark previous active global summary as deleted
+        db.prepare(`UPDATE archive_summaries SET is_deleted = 1 WHERE summary_type = 'global' AND is_deleted = 0`).run();
+
         const globalSummaryId = uuidv4();
         db.prepare(`
           INSERT INTO archive_summaries (id, summary_text, coverage_start, coverage_end, summary_type, created_at, updated_at)
           VALUES (?, ?, ?, ?, 'global', ?, ?)
         `).run(globalSummaryId, resultData.global_summary, coverageStart, coverageEnd, now, now);
 
-        // Write global summary markdown
-        const globalMdPath = path.join(SUMMARIES_DIR, 'Global_Archive_Digest.md');
-        fs.writeFileSync(globalMdPath, `---
+        filesToWrite.push({
+          path: path.join(SUMMARIES_DIR, 'Global_Archive_Digest.md'),
+          content: `---
 title: "Global Archive Digest"
 updated: "${now}"
 coverage_start: "${coverageStart}"
@@ -223,10 +202,11 @@ source: "Personal AI Archive"
 # Global AI Archive Digest
 
 ${resultData.global_summary}
-`, 'utf8');
+`
+        });
       }
 
-      // Categories
+      // 2. Categories
       for (const cat of (resultData.categories || [])) {
         let categoryRecord = db.prepare('SELECT id FROM categories WHERE name = ?').get(cat.name);
         let categoryId = categoryRecord?.id;
@@ -239,21 +219,21 @@ ${resultData.global_summary}
           `).run(categoryId, cat.name, cat.description || '', now, now);
         }
 
+        // Mark previous active summary for this category as deleted
+        db.prepare(`UPDATE archive_summaries SET is_deleted = 1 WHERE category_id = ? AND is_deleted = 0`).run(categoryId);
+
         const summaryId = uuidv4();
         db.prepare(`
           INSERT INTO archive_summaries (id, category_id, summary_text, coverage_start, coverage_end, summary_type, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, 'category', ?, ?)
         `).run(summaryId, categoryId, cat.summary_text, coverageStart, coverageEnd, now, now);
 
-        // Write category markdown note for Obsidian
         const safeFilename = cat.name.replace(/[^a-zA-Z0-9_-]/g, '_') + '.md';
-        const catMdPath = path.join(SUMMARIES_DIR, safeFilename);
+        const recsMarkdown = (cat.key_recommendations || []).map(r => `- ${r}`).join('\n');
 
-        const recsMarkdown = (cat.key_recommendations || [])
-          .map(r => `- ${r}`)
-          .join('\n');
-
-        const mdContent = `---
+        filesToWrite.push({
+          path: path.join(SUMMARIES_DIR, safeFilename),
+          content: `---
 category: "${cat.name}"
 updated: "${now}"
 coverage_start: "${coverageStart}"
@@ -268,10 +248,19 @@ ${cat.description ? `*${cat.description}*\n` : ''}
 ${cat.summary_text}
 
 ${recsMarkdown ? `## Key Recommendations\n${recsMarkdown}\n` : ''}
-`;
-        fs.writeFileSync(catMdPath, mdContent, 'utf8');
+`
+        });
       }
     })();
+
+    // Write markdown files on disk after DB transaction commits
+    for (const f of filesToWrite) {
+      try {
+        fs.writeFileSync(f.path, f.content, 'utf8');
+      } catch (err) {
+        console.warn(`[Summarizer] Failed to write summary file ${f.path}:`, err.message);
+      }
+    }
 
     return {
       success: true,

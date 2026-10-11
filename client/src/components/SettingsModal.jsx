@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Key, Server, Check, FolderSync } from 'lucide-react';
 import { api } from '../api';
 
@@ -37,22 +37,32 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
     }
   };
 
-  const checkVaultPath = async (val) => {
-    try {
-      const updated = await api.updateObsidianVaultPath(val);
-      setObsidianStatus(updated);
-    } catch (_) {}
+  const checkVaultTimerRef = useRef(null);
+
+  const triggerVaultCheck = (val) => {
+    if (checkVaultTimerRef.current) clearTimeout(checkVaultTimerRef.current);
+    checkVaultTimerRef.current = setTimeout(async () => {
+      try {
+        const updated = await api.updateObsidianVaultPath(val);
+        setObsidianStatus(updated);
+      } catch (_) {}
+    }, 600);
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await api.updateSettings({
-        gemini_api_key: geminiKey,
-        openai_api_key: openAiKey,
+      const payload = {
         ollama_base_url: ollamaUrl,
         lmstudio_base_url: lmStudioUrl
-      });
+      };
+      if (geminiKey && !geminiKey.startsWith('••••')) {
+        payload.gemini_api_key = geminiKey;
+      }
+      if (openAiKey && !openAiKey.startsWith('••••')) {
+        payload.openai_api_key = openAiKey;
+      }
+      await api.updateSettings(payload);
       await api.updateObsidianVaultPath(obsidianVaultPath);
       setSavedSuccess(true);
       setTimeout(() => {
@@ -165,8 +175,9 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
               value={obsidianVaultPath}
               onChange={(e) => {
                 setObsidianVaultPath(e.target.value);
-                checkVaultPath(e.target.value);
+                triggerVaultCheck(e.target.value);
               }}
+              onBlur={() => triggerVaultCheck(obsidianVaultPath)}
             />
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
               Absolute path to your local Obsidian vault. Sync will create an <code>AI Archive</code> folder inside this vault.

@@ -19,8 +19,7 @@ export default function Sidebar({
   onNewConversation,
   onDeleteConversation,
   providerHealth,
-  onOpenSettings,
-  onOpenGoogleSearch
+  onOpenSettings
 }) {
   return (
     <aside className="sidebar">

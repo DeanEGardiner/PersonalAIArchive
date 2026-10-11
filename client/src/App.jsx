@@ -5,13 +5,11 @@ import ArchiveView from './components/ArchiveView';
 import SummaryView from './components/SummaryView';
 import ObsidianNotesView from './components/ObsidianNotesView';
 import SettingsModal from './components/SettingsModal';
-import GoogleSearchModal from './components/GoogleSearchModal';
 import { api } from './api';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('chat'); // 'chat' | 'archive' | 'summary'
+  const [currentView, setCurrentView] = useState('chat'); // 'chat' | 'archive' | 'summary' | 'obsidian'
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isGoogleSearchOpen, setIsGoogleSearchOpen] = useState(false);
   const [externalInputText, setExternalInputText] = useState('');
 
   // App Data State
@@ -25,7 +23,7 @@ export default function App() {
 
   // Model & Provider Selection
   const [selectedProvider, setSelectedProvider] = useState('gemini');
-  const [selectedModel, setSelectedModel] = useState('gemini-3.6-flash');
+  const [selectedModel, setSelectedModel] = useState('gemini-3.8-flash');
 
   // Streaming & Submission State
   const [isStreaming, setIsStreaming] = useState(false);
@@ -45,7 +43,6 @@ export default function App() {
     try {
       const h = await api.getHealth();
       setProviderHealth(h);
-      // Pick initial online provider only if user hasn't selected one yet
       setSelectedProvider((prev) => {
         if (prev) return prev;
         if (h.gemini?.available && h.gemini.models?.length > 0) return 'gemini';
@@ -142,94 +139,86 @@ export default function App() {
     }
   };
 
-  // Chat message sending with live SSE streaming
-  const handleSendMessage = async ({ text }) => {
-    if (isStreaming) return;
-
-    // Optimistically append user message to local state
-    const tempUserMsg = {
-      id: 'temp-' + Date.now(),
-      role: 'user',
-      content: text,
-      timestamp: new Date().toISOString()
-    };
-    setMessages((prev) => [...prev, tempUserMsg]);
-    setIsStreaming(true);
-    setStreamingText('');
-
-    // If active conversation currently has default title, update it immediately with the first query
-    const cleanTitle = text.slice(0, 40) + (text.length > 40 ? '...' : '');
-    if (!currentConversation?.title || currentConversation.title === 'New Conversation' || currentConversation.title === 'Untitled Conversation') {
-      setCurrentConversation((prev) => prev ? { ...prev, title: cleanTitle } : prev);
-      setConversations((prev) => prev.map((c) => c.id === activeConvId ? { ...c, title: cleanTitle } : c));
-    }
+  // Unified Post Submission with Live SSE Streaming (Merging Strategy)
+  const handleCreatePost = async ({ content, mode, attachment }) => {
+    if (isSubmittingPost || isStreaming) return;
+    setIsSubmittingPost(true);
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    let accumulatedText = '';
+    // Optimistically add user message immediately
+    const tempUserMsg = {
+      id: 'temp-' + Date.now(),
+      role: 'user',
+      content,
+      timestamp: new Date().toISOString(),
+      attachments: attachment ? [attachment] : []
+    };
+    setMessages((prev) => [...prev, tempUserMsg]);
+
+    const isAIMode = mode === 'ai_analysis' || mode === 'google_search';
+    if (isAIMode) {
+      setIsStreaming(true);
+      setStreamingText('');
+    }
+
+    let targetConvId = activeConvId;
 
     try {
-      await api.streamChat({
+      await api.streamPost({
         conversationId: activeConvId,
-        message: text,
+        content,
+        mode,
+        attachment,
         provider: selectedProvider,
         model: selectedModel,
         abortSignal: abortController.signal,
+        onInit: (initData) => {
+          if (initData.conversationId && initData.conversationId !== targetConvId) {
+            targetConvId = initData.conversationId;
+            setActiveConvId(targetConvId);
+          }
+          if (initData.userMessage) {
+            setMessages((prev) => prev.map((m) => m.id === tempUserMsg.id ? initData.userMessage : m));
+          }
+        },
         onChunk: (chunk) => {
-          accumulatedText += chunk;
-          setStreamingText(accumulatedText);
+          setStreamingText((prev) => prev + chunk);
         },
         onError: (err) => {
-          console.error('Stream error:', err);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: 'err-' + Date.now(),
-              role: 'assistant',
-              status: 'error',
-              content: `⚠️ Error from ${selectedProvider} (${selectedModel}): ${err}\n\nTroubleshooting Tip: Ensure your local AI service (Ollama on :11434 or LM Studio on :1234) is running and model '${selectedModel}' is loaded.`,
-              timestamp: new Date().toISOString()
-            }
-          ]);
+          console.error('[Stream Error]:', err);
         },
-        onDone: async (data) => {
+        onDone: async (doneData) => {
           setIsStreaming(false);
           setStreamingText('');
-          if (data.status === 'interrupted' && !accumulatedText) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: 'interrupted-' + Date.now(),
-                role: 'assistant',
-                status: 'interrupted',
-                content: `(Generation interrupted before tokens were received from ${selectedProvider})`,
-                timestamp: new Date().toISOString()
-              }
-            ]);
+
+          if (doneData.aiResponse) {
+            setMessages((prev) => {
+              const withoutTemp = prev.filter((m) => m.id !== tempUserMsg.id);
+              const userMsg = doneData.userMessage || tempUserMsg;
+              return [...withoutTemp, userMsg, doneData.aiResponse];
+            });
           }
-          if (data.conversationId) {
-            setActiveConvId(data.conversationId);
-            await selectConversation(data.conversationId, true);
-            await loadConversations();
+
+          if (doneData.conversationId) {
+            const finalId = doneData.conversationId;
+            setActiveConvId(finalId);
+            const convData = await api.getConversation(finalId);
+            setCurrentConversation(convData);
+            setMessages(convData.messages || []);
+            const convs = await api.getConversations();
+            setConversations(convs);
           }
         }
       });
     } catch (err) {
       if (err.name !== 'AbortError') {
-        console.error('Chat error:', err);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: 'err-' + Date.now(),
-            role: 'assistant',
-            status: 'error',
-            content: `⚠️ Network / Connection Error: ${err.message}\n\nPlease check if backend server and local model service are accessible.`,
-            timestamp: new Date().toISOString()
-          }
-        ]);
+        console.error('Failed to submit post:', err);
+        alert('Failed to submit post: ' + err.message);
       }
     } finally {
+      setIsSubmittingPost(false);
       setIsStreaming(false);
       abortControllerRef.current = null;
     }
@@ -242,126 +231,47 @@ export default function App() {
     }
   };
 
-  // Triple-Action Post Submission ('standard', 'ai_analysis', 'google_search')
-  const handleCreatePost = async ({ content, mode, attachment }) => {
-    if (isSubmittingPost) return;
-    setIsSubmittingPost(true);
-    try {
-      const res = await api.createPost({
-        conversationId: activeConvId,
-        content,
-        mode,
-        attachment,
-        provider: selectedProvider,
-        model: selectedModel
-      });
-
-      if (res.conversationId) {
-        if (!activeConvId || activeConvId !== res.conversationId) {
-          setActiveConvId(res.conversationId);
-        }
-        await selectConversation(res.conversationId, true);
-        await loadConversations();
-      }
-    } catch (err) {
-      alert('Failed to submit post: ' + err.message);
-    } finally {
-      setIsSubmittingPost(false);
-    }
-  };
-
-  // Google Search AI Integration Handlers
   const handleInsertIntoComposer = (text) => {
     setExternalInputText(text);
     setCurrentView('chat');
   };
 
-  const handleStartChatWithNote = (note) => {
+  const handleStartChatWithNote = async (note) => {
     const promptText = `Let's discuss and analyze my Obsidian note "${note.title}":\n\n${note.content || note.preview}`;
     setExternalInputText(promptText);
-    handleNewConversation();
+    await handleNewConversation();
     setCurrentView('chat');
-  };
-
-  const handlePostGoogleSearchToThread = async (text) => {
-    if (!activeConvId) return;
-    try {
-      const newMsg = await api.addMessage({
-        conversationId: activeConvId,
-        role: 'assistant',
-        content: text,
-        provider: 'gemini',
-        model: 'gemini-3.6-flash'
-      });
-      setMessages((prev) => [...prev, newMsg]);
-      setCurrentView('chat');
-      await loadConversations();
-    } catch (err) {
-      console.error('Failed to post search answer to thread:', err);
-      alert('Failed to post to thread: ' + err.message);
-    }
-  };
-
-  const handleNewThreadWithGoogleSearch = async ({ title, content }) => {
-    try {
-      const newConv = await api.createConversation({
-        title,
-        provider: 'gemini',
-        model: 'gemini-3.6-flash'
-      });
-      const newMsg = await api.addMessage({
-        conversationId: newConv.id,
-        role: 'assistant',
-        content,
-        provider: 'gemini',
-        model: 'gemini-3.6-flash'
-      });
-      setConversations([newConv, ...conversations]);
-      setActiveConvId(newConv.id);
-      setCurrentConversation(newConv);
-      setMessages([newMsg]);
-      setCurrentView('chat');
-    } catch (err) {
-      console.error('Failed to create new thread with search:', err);
-      alert('Failed to create thread: ' + err.message);
-    }
   };
 
   const handleSummarizeUrlToThread = async (url) => {
     let convId = activeConvId;
-    let targetConv = currentConversation;
 
     try {
-      // 1. If no active conversation exists, create a new one
       if (!convId) {
         let domain = url;
         try { domain = new URL(url).hostname.replace('www.', ''); } catch (e) {}
         const newConv = await api.createConversation({
           title: `Summary: ${domain}`,
-          provider: 'gemini',
-          model: 'gemini-3.6-flash'
+          provider: selectedProvider,
+          model: selectedModel
         });
         convId = newConv.id;
-        targetConv = newConv;
         setConversations([newConv, ...conversations]);
         setActiveConvId(newConv.id);
         setCurrentConversation(newConv);
       }
 
-      // Switch view to chat immediately so user sees the progress
       setCurrentView('chat');
 
-      // 2. Post user request message into thread
       const userPromptText = `Please provide an AI summary of this page: ${url}`;
       const userMsg = await api.addMessage({
         conversationId: convId,
         role: 'user',
         content: userPromptText,
-        provider: 'gemini',
-        model: 'gemini-3.6-flash'
+        provider: selectedProvider,
+        model: selectedModel
       });
 
-      // Temporary placeholder for assistant response while generating
       const tempAssistantId = 'temp-summary-' + Date.now();
       setMessages((prev) => [
         ...prev,
@@ -370,30 +280,27 @@ export default function App() {
           id: tempAssistantId,
           role: 'assistant',
           content: `⏳ Analyzing & synthesizing summary for ${url}...`,
-          provider: 'gemini',
-          model: 'gemini-3.6-flash',
+          provider: selectedProvider,
+          model: selectedModel,
           timestamp: new Date().toISOString()
         }
       ]);
 
-      // 3. Request URL summary from backend
-      const res = await api.summarizeURL({ url, model: 'gemini-3.6-flash' });
+      const res = await api.summarizeURL({ url, model: selectedModel });
 
       let assistantContent = res.summary;
       if (res.title && !assistantContent.includes(res.title)) {
         assistantContent = `### ${res.title}\n\n${assistantContent}`;
       }
 
-      // 4. Save assistant response into database
       const assistantMsg = await api.addMessage({
         conversationId: convId,
         role: 'assistant',
         content: assistantContent,
-        provider: 'gemini',
-        model: 'gemini-3.6-flash'
+        provider: selectedProvider,
+        model: selectedModel
       });
 
-      // Replace placeholder with final message
       setMessages((prev) => prev.map((m) => (m.id === tempAssistantId ? assistantMsg : m)));
       await loadConversations();
     } catch (err) {
@@ -424,17 +331,14 @@ export default function App() {
         onDeleteConversation={handleDeleteConversation}
         providerHealth={providerHealth}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenGoogleSearch={() => setIsGoogleSearchOpen(true)}
       />
 
       {/* Main Active View */}
       <main className="main-content">
         {currentView === 'chat' && (
           <ChatView 
-            activeConvId={activeConvId}
             conversation={currentConversation}
             messages={messages}
-            onSendMessage={handleSendMessage}
             onStopStreaming={handleStopStreaming}
             isStreaming={isStreaming}
             streamingText={streamingText}
@@ -482,17 +386,6 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onSaved={loadHealth}
-      />
-
-      {/* Google Search AI Modal */}
-      <GoogleSearchModal 
-        isOpen={isGoogleSearchOpen}
-        onClose={() => setIsGoogleSearchOpen(false)}
-        activeConvId={activeConvId}
-        onInsertIntoComposer={handleInsertIntoComposer}
-        onPostToThread={handlePostGoogleSearchToThread}
-        onNewThreadWithContent={handleNewThreadWithGoogleSearch}
-        onSummarizeUrl={handleSummarizeUrlToThread}
       />
     </div>
   );

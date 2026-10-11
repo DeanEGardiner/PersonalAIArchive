@@ -2,33 +2,20 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { db, SUMMARIES_DIR } = require('./db');
+const { db } = require('./db');
+const config = require('./config');
 
 class ObsidianSyncService {
-  /**
-   * Get the configured Obsidian vault path from settings
-   */
   getVaultPath() {
-    const setting = db.prepare("SELECT value FROM settings WHERE key = 'obsidian_vault_path'").get();
-    return setting?.value?.trim() || '/Users/deangardiner/Documents/DeanGVault';
+    return config.getSetting('obsidian_vault_path') || config.getDefaultVaultPath();
   }
 
-  /**
-   * Set and persist the Obsidian vault path
-   */
   setVaultPath(vaultPath) {
     const cleanPath = (vaultPath || '').trim();
-    db.prepare(`
-      INSERT INTO settings (key, value, updated_at) 
-      VALUES ('obsidian_vault_path', ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-    `).run(cleanPath);
+    config.setSetting('obsidian_vault_path', cleanPath);
     return cleanPath;
   }
 
-  /**
-   * Validate if the vault path exists and count markdown files
-   */
   validateVault(customPath) {
     const vaultPath = customPath || this.getVaultPath();
     if (!vaultPath) {
@@ -44,13 +31,10 @@ class ObsidianSyncService {
         return { valid: false, path: vaultPath, exists: true, error: 'Path is a file, not a directory.' };
       }
 
-      // Quick count of markdown notes
-      const notes = this.findMarkdownFiles(vaultPath);
       return {
         valid: true,
         path: vaultPath,
         exists: true,
-        noteCount: notes.length,
         hasAIArchiveDir: fs.existsSync(path.join(vaultPath, 'AI Archive'))
       };
     } catch (err) {
@@ -58,9 +42,6 @@ class ObsidianSyncService {
     }
   }
 
-  /**
-   * Recursively locate all markdown files, ignoring .obsidian, .trash, Attachments, and AI Archive
-   */
   findMarkdownFiles(dir, baseDir = dir) {
     let results = [];
     const ignoreFolders = new Set(['.obsidian', '.trash', '.git', 'ai archive', 'attachments', 'node_modules']);
@@ -68,7 +49,7 @@ class ObsidianSyncService {
     try {
       const items = fs.readdirSync(dir, { withFileTypes: true });
       for (const item of items) {
-        if (item.name.startsWith('.')) continue; // skip hidden files
+        if (item.name.startsWith('.')) continue;
 
         const fullPath = path.join(dir, item.name);
         const lowerName = item.name.toLowerCase();
@@ -89,30 +70,20 @@ class ObsidianSyncService {
     return results;
   }
 
-  /**
-   * Calculate SHA-256 hash of a string
-   */
   computeChecksum(content) {
     return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
   }
 
-  /**
-   * Extract a title from Markdown content or file name
-   */
   extractTitle(content, fileName) {
-    // Look for first # Heading 1
     const match = content.match(/^#\s+(.+)$/m);
     if (match && match[1]) {
       return match[1].trim();
     }
-    // Fall back to filename without extension
     return path.basename(fileName, '.md').trim();
   }
 
   /**
-   * Two-Way Sync:
-   * 1. Imports all Obsidian vault notes into obsidian_notes & obsidian_notes_fts
-   * 2. Exports all native AI conversations and summaries into <Vault>/AI Archive/
+   * Two-Way Sync (Transactional & Incremental)
    */
   async sync(customVaultPath) {
     const t0 = Date.now();
@@ -128,13 +99,10 @@ class ObsidianSyncService {
     let deletedCount = 0;
     let exportedCount = 0;
 
-    // -------------------------------------------------------------
-    // PHASE 1: IMPORT FROM OBSIDIAN VAULT (Vault -> DB)
-    // -------------------------------------------------------------
+    // 1. IMPORT FROM OBSIDIAN VAULT (Vault -> DB)
     const diskNotes = this.findMarkdownFiles(vaultPath);
     const diskRelPaths = new Set();
 
-    // Prepare DB statements
     const findNoteStmt = db.prepare('SELECT id, checksum, mtime_ms FROM obsidian_notes WHERE rel_path = ?');
     const insertNoteStmt = db.prepare(`
       INSERT INTO obsidian_notes (id, file_name, rel_path, title, content, checksum, mtime_ms, created_at, updated_at)
@@ -145,62 +113,66 @@ class ObsidianSyncService {
       SET title = ?, content = ?, checksum = ?, mtime_ms = ?, updated_at = ?
       WHERE id = ?
     `);
-    const insertFtsStmt = db.prepare('INSERT INTO obsidian_notes_fts (title, content, rel_path, note_id) VALUES (?, ?, ?, ?)');
-    const deleteFtsStmt = db.prepare('DELETE FROM obsidian_notes_fts WHERE note_id = ?');
-
-    for (const note of diskNotes) {
-      diskRelPaths.add(note.relPath);
-
-      try {
-        const stat = fs.statSync(note.fullPath);
-        const mtimeMs = Math.round(stat.mtimeMs);
-        const content = fs.readFileSync(note.fullPath, 'utf8');
-        const checksum = this.computeChecksum(content);
-        const title = this.extractTitle(content, note.fileName);
-        const now = new Date().toISOString();
-
-        const existing = findNoteStmt.get(note.relPath);
-
-        if (!existing) {
-          // New note
-          const id = uuidv4();
-          insertNoteStmt.run(id, note.fileName, note.relPath, title, content, checksum, mtimeMs, now, now);
-          insertFtsStmt.run(title, content, note.relPath, id);
-          importedCount++;
-        } else if (existing.checksum !== checksum || existing.mtime_ms !== mtimeMs) {
-          // Modified note
-          updateNoteStmt.run(title, content, checksum, mtimeMs, now, existing.id);
-          deleteFtsStmt.run(existing.id);
-          insertFtsStmt.run(title, content, note.relPath, existing.id);
-          updatedCount++;
-        }
-      } catch (err) {
-        console.warn(`[ObsidianSync] Failed to process note ${note.relPath}:`, err.message);
-      }
-    }
-
-    // Clean up notes in DB that were deleted from disk
-    const allDbNotes = db.prepare('SELECT id, rel_path FROM obsidian_notes').all();
     const deleteNoteStmt = db.prepare('DELETE FROM obsidian_notes WHERE id = ?');
+    const allDbNotes = db.prepare('SELECT id, rel_path FROM obsidian_notes').all();
 
-    for (const dbNote of allDbNotes) {
-      if (!diskRelPaths.has(dbNote.rel_path)) {
-        deleteFtsStmt.run(dbNote.id);
-        deleteNoteStmt.run(dbNote.id);
-        deletedCount++;
+    // Run import inside a single database transaction
+    db.transaction(() => {
+      for (const note of diskNotes) {
+        diskRelPaths.add(note.relPath);
+
+        try {
+          const stat = fs.statSync(note.fullPath);
+          const mtimeMs = Math.round(stat.mtimeMs);
+          const existing = findNoteStmt.get(note.relPath);
+
+          // Fast skip if mtime is unchanged
+          if (existing && existing.mtime_ms === mtimeMs) {
+            continue;
+          }
+
+          const content = fs.readFileSync(note.fullPath, 'utf8');
+          const checksum = this.computeChecksum(content);
+
+          if (existing && existing.checksum === checksum) {
+            // Content identical, just update mtime
+            updateNoteStmt.run(existing.title || note.fileName, content, checksum, mtimeMs, new Date().toISOString(), existing.id);
+            continue;
+          }
+
+          const title = this.extractTitle(content, note.fileName);
+          const now = new Date().toISOString();
+
+          if (!existing) {
+            const id = uuidv4();
+            insertNoteStmt.run(id, note.fileName, note.relPath, title, content, checksum, mtimeMs, now, now);
+            importedCount++;
+          } else {
+            updateNoteStmt.run(title, content, checksum, mtimeMs, now, existing.id);
+            updatedCount++;
+          }
+        } catch (err) {
+          console.warn(`[ObsidianSync] Failed to process note ${note.relPath}:`, err.message);
+        }
       }
-    }
 
-    // -------------------------------------------------------------
-    // PHASE 2: EXPORT NATIVE AI ARCHIVE TO VAULT (DB -> <Vault>/AI Archive/)
-    // -------------------------------------------------------------
+      // Clean up notes in DB deleted from disk
+      for (const dbNote of allDbNotes) {
+        if (!diskRelPaths.has(dbNote.rel_path)) {
+          deleteNoteStmt.run(dbNote.id);
+          deletedCount++;
+        }
+      }
+    })();
+
+    // 2. EXPORT NATIVE AI ARCHIVE TO VAULT (DB -> <Vault>/AI Archive/)
     const aiArchiveDir = path.join(vaultPath, 'AI Archive');
     const convDir = path.join(aiArchiveDir, 'Conversations');
     const summDir = path.join(aiArchiveDir, 'Summaries');
 
-    if (!fs.existsSync(aiArchiveDir)) fs.mkdirSync(aiArchiveDir, { recursive: true });
-    if (!fs.existsSync(convDir)) fs.mkdirSync(convDir, { recursive: true });
-    if (!fs.existsSync(summDir)) fs.mkdirSync(summDir, { recursive: true });
+    fs.mkdirSync(aiArchiveDir, { recursive: true });
+    fs.mkdirSync(convDir, { recursive: true });
+    fs.mkdirSync(summDir, { recursive: true });
 
     // 2a. Export Conversations
     const conversations = db.prepare('SELECT * FROM conversations WHERE is_deleted = 0 ORDER BY created_at DESC').all();
@@ -220,7 +192,6 @@ class ObsidianSyncService {
       const fileName = `${createdDate}_${cleanTitle || 'Conversation'}_${conv.id.slice(0, 6)}.md`;
       const targetFilePath = path.join(convDir, fileName);
 
-      // Build clean Markdown note
       let mdContent = `---
 id: "${conv.id}"
 title: "${(conv.title || '').replace(/"/g, '\\"')}"
@@ -248,7 +219,6 @@ source: "Personal AI Archive"
         mdContent += `${m.content.trim()}\n\n---\n\n`;
       }
 
-      // Only write if new or changed
       let shouldWrite = true;
       if (fs.existsSync(targetFilePath)) {
         const existingContent = fs.readFileSync(targetFilePath, 'utf8');
@@ -309,13 +279,7 @@ ${s.summary_text}
 
     const durationMs = Date.now() - t0;
     const nowIso = new Date().toISOString();
-
-    // Update last sync setting
-    db.prepare(`
-      INSERT INTO settings (key, value, updated_at) 
-      VALUES ('obsidian_last_sync', ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-    `).run(nowIso);
+    config.setSetting('obsidian_last_sync', nowIso);
 
     return {
       success: true,
@@ -330,9 +294,6 @@ ${s.summary_text}
     };
   }
 
-  /**
-   * Search synced Obsidian notes using FTS5
-   */
   searchNotes(query, limit = 50) {
     if (!query || !query.trim()) {
       return db.prepare(`
@@ -355,13 +316,12 @@ ${s.summary_text}
       return db.prepare(`
         SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.updated_at
         FROM obsidian_notes_fts fts
-        JOIN obsidian_notes n ON fts.note_id = n.id
+        JOIN obsidian_notes n ON fts.rowid = n.rowid
         WHERE obsidian_notes_fts MATCH ?
         ORDER BY rank
         LIMIT ?
       `).all(ftsExpr, limit);
-    } catch (err) {
-      // Fallback to LIKE
+    } catch (_) {
       return db.prepare(`
         SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, updated_at
         FROM obsidian_notes
@@ -372,29 +332,23 @@ ${s.summary_text}
     }
   }
 
-  /**
-   * Get single note by ID
-   */
   getNoteById(id) {
     return db.prepare('SELECT * FROM obsidian_notes WHERE id = ?').get(id);
   }
 
-  /**
-   * Get sync status overview
-   */
   getStatus() {
     const vaultPath = this.getVaultPath();
     const validation = this.validateVault(vaultPath);
-    const lastSyncSetting = db.prepare("SELECT value FROM settings WHERE key = 'obsidian_last_sync'").get();
+    const lastSync = config.getSetting('obsidian_last_sync');
     const countRow = db.prepare('SELECT COUNT(*) as total FROM obsidian_notes').get();
 
     return {
       vaultPath,
       isValid: validation.valid,
       exists: validation.exists,
-      diskNoteCount: validation.noteCount || 0,
+      diskNoteCount: countRow?.total || 0,
       databaseNoteCount: countRow?.total || 0,
-      lastSync: lastSyncSetting?.value || null,
+      lastSync: lastSync || null,
       error: validation.error || null
     };
   }

@@ -14,6 +14,10 @@ export default defineConfig({
       '/summaries-files': {
         target: 'http://localhost:3002',
         changeOrigin: true
+      },
+      '/media': {
+        target: 'http://localhost:3002',
+        changeOrigin: true
       }
     }
   }

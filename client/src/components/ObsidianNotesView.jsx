@@ -8,8 +8,6 @@ import {
   Clock, 
   Folder, 
   ArrowRight, 
-  CheckCircle2, 
-  ExternalLink,
   MessageSquarePlus,
   Send
 } from 'lucide-react';
@@ -25,21 +23,22 @@ export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWit
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncToast, setSyncToast] = useState(null);
 
+  const searchTimerRef = useRef(null);
+
   useEffect(() => {
     loadData();
   }, []);
 
-  const loadData = async (query = '') => {
+  const loadData = async () => {
     setIsLoading(true);
     try {
       const [statusRes, notesRes] = await Promise.all([
         api.getObsidianStatus().catch(() => null),
-        api.getObsidianNotes(query).catch(() => [])
+        api.getObsidianNotes('').catch(() => [])
       ]);
       setStatus(statusRes);
       setNotes(notesRes);
       if (notesRes.length > 0 && !selectedNote) {
-        // Optionally select first note on desktop
         setSelectedNote(notesRes[0]);
       }
     } catch (err) {
@@ -52,7 +51,15 @@ export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWit
   const handleSearch = (e) => {
     const q = e.target.value;
     setSearchQuery(q);
-    loadData(q);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const notesRes = await api.getObsidianNotes(q);
+        setNotes(notesRes);
+      } catch (err) {
+        console.error('Search notes failed:', err);
+      }
+    }, 250);
   };
 
   const handleSync = async () => {

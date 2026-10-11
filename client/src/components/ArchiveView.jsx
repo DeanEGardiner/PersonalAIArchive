@@ -61,7 +61,7 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
 
   const filteredConversations = conversations.filter(c => {
     if (selectedProviderFilter === 'all') return true;
-    return c.provider === selectedProviderFilter;
+    return (c.default_provider || c.provider) === selectedProviderFilter;
   });
 
   return (

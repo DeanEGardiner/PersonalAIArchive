@@ -5,9 +5,6 @@ import {
   Sparkles, 
   Cpu, 
   Clock, 
-  ChevronDown,
-  Info,
-  Tag,
   Lock,
   Globe,
   Paperclip,
@@ -18,10 +15,8 @@ import { api } from '../api';
 import FormattedText from './FormattedText';
 
 export default function ChatView({
-  activeConvId,
   conversation,
   messages,
-  onSendMessage,
   onStopStreaming,
   isStreaming,
   streamingText,
@@ -49,14 +44,15 @@ export default function ChatView({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingText, isSubmitting]);
 
-  // Sync external input (e.g. from Google Search modal insertion)
+  // Sync external input (e.g. from Obsidian note insertion)
   useEffect(() => {
-    if (externalInputText !== undefined && externalInputText !== null && externalInputText !== '') {
+    if (externalInputText) {
+      const textToInsert = externalInputText;
+      setExternalInputText?.('');
       setInputText((prev) => {
         const separator = prev.trim() ? '\n\n' : '';
-        return prev + separator + externalInputText;
+        return prev + separator + textToInsert;
       });
-      setExternalInputText?.('');
       if (textareaRef.current) {
         setTimeout(() => {
           if (textareaRef.current) {
@@ -108,24 +104,18 @@ export default function ChatView({
     if (!inputText.trim() || isSubmitting || isStreaming) return;
 
     if (onSubmitPost) {
-      await onSubmitPost({
-        content: inputText.trim(),
-        mode: postMode,
-        attachment: attachedImage
-      });
+      const text = inputText.trim();
+      const img = attachedImage;
       setInputText('');
       setAttachedImage(null);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
-    } else {
-      onSendMessage({
-        text: inputText
+      await onSubmitPost({
+        content: text,
+        mode: postMode,
+        attachment: img
       });
-      setInputText('');
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
     }
   };
 
@@ -346,7 +336,7 @@ export default function ChatView({
                           let domain = '';
                           try {
                             domain = new URL(s.url).hostname.replace('www.', '');
-                          } catch (e) {
+                          } catch (_) {
                             domain = s.title;
                           }
                           return (
