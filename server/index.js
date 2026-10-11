@@ -302,9 +302,9 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
     postImages.push(attachment);
   }
 
-  // Multi-turn conversation history for context continuity
+  // Multi-turn conversation history for context continuity (with timestamps)
   const conversationHistory = db.prepare(`
-    SELECT role, content FROM messages
+    SELECT role, content, timestamp FROM messages
     WHERE conversation_id = ? AND id != ? AND is_deleted = 0
     ORDER BY timestamp DESC
     LIMIT ?
@@ -366,7 +366,8 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
     if (searchHits.length > 0) {
       contextParts.push(`### Relevant Past Archive Conversations:\n` + searchHits.map(h => {
         const snippet = h.content.length > 1000 ? h.content.slice(0, 1000) + '... [truncated]' : h.content;
-        return `[Conversation: "${h.conversation_title}"] (${h.role}): ${snippet}`;
+        const ts = h.timestamp ? ` [${h.timestamp}]` : '';
+        return `[Conversation: "${h.conversation_title}"] (${h.role})${ts}: ${snippet}`;
       }).join('\n\n'));
     }
 
@@ -382,7 +383,8 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
         const fullNote = obsidianSync.getNoteById(n.id);
         const rawContent = fullNote?.content || n.preview || '';
         const snippet = rawContent.length > 1000 ? rawContent.slice(0, 1000) + '... [truncated]' : rawContent;
-        return `[Obsidian Note: "${n.title}"] (${n.rel_path}):\n${snippet}`;
+        const noteTime = n.updated_at || (n.mtime_ms ? new Date(n.mtime_ms).toISOString() : '');
+        return `[Obsidian Note: "${n.title}"] (${n.rel_path})${noteTime ? ` [Updated: ${noteTime}]` : ''}:\n${snippet}`;
       }).join('\n\n'));
     }
 
@@ -430,6 +432,7 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
           model: targetModel,
           provider: targetProvider,
           abortSignal: abortController.signal,
+          postTimestamp: now,
           onChunk
         });
       } else if (mode === 'google_search') {
@@ -512,7 +515,8 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
         conversationHistory,
         images: postImages,
         model: targetModel,
-        provider: targetProvider
+        provider: targetProvider,
+        postTimestamp: now
       });
     } else if (mode === 'google_search') {
       finalResult = await providerRouter.googleSearchAI({
@@ -997,6 +1001,13 @@ if (fs.existsSync(CLIENT_DIST)) {
 }
 
 // Start Express Server bound to HOST (localhost/127.0.0.1)
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Personal AI Archive server running on http://${HOST}:${PORT}`);
+});
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[Server Error] Port ${PORT} is already in use by another process.`);
+  } else {
+    console.error(`[Server Error]`, err);
+  }
 });

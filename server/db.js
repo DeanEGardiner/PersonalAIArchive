@@ -157,19 +157,20 @@ const migrations = [
       CREATE VIRTUAL TABLE obsidian_notes_fts USING fts5(
         title,
         content,
+        rel_path,
         content='obsidian_notes',
         content_rowid='rowid'
       );
 
       CREATE TRIGGER obsidian_fts_ai AFTER INSERT ON obsidian_notes BEGIN
-        INSERT INTO obsidian_notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+        INSERT INTO obsidian_notes_fts(rowid, title, content, rel_path) VALUES (new.rowid, new.title, new.content, new.rel_path);
       END;
       CREATE TRIGGER obsidian_fts_ad AFTER DELETE ON obsidian_notes BEGIN
-        INSERT INTO obsidian_notes_fts(obsidian_notes_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
+        INSERT INTO obsidian_notes_fts(obsidian_notes_fts, rowid, title, content, rel_path) VALUES ('delete', old.rowid, old.title, old.content, old.rel_path);
       END;
-      CREATE TRIGGER obsidian_fts_au AFTER UPDATE OF title, content ON obsidian_notes BEGIN
-        INSERT INTO obsidian_notes_fts(obsidian_notes_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
-        INSERT INTO obsidian_notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+      CREATE TRIGGER obsidian_fts_au AFTER UPDATE OF title, content, rel_path ON obsidian_notes BEGIN
+        INSERT INTO obsidian_notes_fts(obsidian_notes_fts, rowid, title, content, rel_path) VALUES ('delete', old.rowid, old.title, old.content, old.rel_path);
+        INSERT INTO obsidian_notes_fts(rowid, title, content, rel_path) VALUES (new.rowid, new.title, new.content, new.rel_path);
       END;
 
       INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');

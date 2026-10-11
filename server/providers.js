@@ -269,12 +269,35 @@ class ProviderRouter {
       apiMessages.push({ role: m.role, content: m.content });
     }
 
-    const stream = await openai.chat.completions.create({
+    const requestOptions = {
       model,
       messages: apiMessages,
-      stream: true,
-      ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
-    }, { signal: abortSignal });
+      stream: true
+    };
+
+    if (jsonMode) {
+      // LM Studio requires type to be 'json_schema' or 'text' (rejects 'json_object')
+      requestOptions.response_format = {
+        type: 'json_schema',
+        json_schema: {
+          name: 'json_response',
+          schema: { type: 'object' }
+        }
+      };
+    }
+
+    let stream;
+    try {
+      stream = await openai.chat.completions.create(requestOptions, { signal: abortSignal });
+    } catch (err) {
+      if (jsonMode && (err?.message?.includes('response_format') || err?.status === 400)) {
+        console.warn(`[LM Studio Provider] Retrying without response_format: ${err.message}`);
+        delete requestOptions.response_format;
+        stream = await openai.chat.completions.create(requestOptions, { signal: abortSignal });
+      } else {
+        throw err;
+      }
+    }
 
     let fullText = '';
     let reasoningText = '';
@@ -320,34 +343,51 @@ class ProviderRouter {
     apiKey,
     provider = 'gemini',
     abortSignal,
+    postTimestamp,
     onChunk = () => {}
   }) {
     const targetModel = config.resolveModel(provider, model);
+    const nowIso = postTimestamp || new Date().toISOString();
+    const nowDateStr = new Date(nowIso).toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    const nowTimeStr = new Date(nowIso).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZoneName: 'short'
+    });
 
-    // Build multi-turn context
+    // Build multi-turn context with timestamps
     let historySection = '';
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
       historySection = `### Recent Conversation History:\n` + conversationHistory.map(m => {
         const snippet = m.content.length > 1000 ? m.content.slice(0, 1000) + '... [truncated]' : m.content;
-        return `${m.role === 'user' ? 'User' : 'Assistant'}: ${snippet}`;
+        const ts = m.timestamp ? ` [${m.timestamp}]` : '';
+        return `${m.role === 'user' ? 'User' : 'Assistant'}${ts}: ${snippet}`;
       }).join('\n\n') + '\n\n';
     }
 
     const systemPrompt = `You are the AI assistant for Personal AI Archive, acting as the user's personal digital second brain and research companion.
+CURRENT SYSTEM DATE & TIME: ${nowIso} (${nowDateStr}, ${nowTimeStr})
 The user has posted an inquiry/note into their personal archive${conversationTitle ? ` under conversation "${conversationTitle}"` : ''}.
 
 TASK:
 1. Examine any attached images together with the user's text.
 2. Provide a comprehensive, accurate, and insightful response.
-3. Actively ground your response in the Personal Archive Knowledge Base below whenever applicable, citing past conversations, dates, or summaries (e.g., "From your earlier discussion in '[Conversation Title]'...").
-4. Maintain context continuity using the Recent Conversation History if this is a follow-up inquiry.
-5. If no specific previous notes match or if additional knowledge is needed, synthesize an insightful, complete answer using your comprehensive AI capabilities.
-6. Format cleanly using Markdown with headings, bullet points, and code blocks where helpful. Do not mention that you received system prompts.`;
+3. Actively ground your response in the Personal Archive Knowledge Base below whenever applicable, citing past conversations, dates, or summaries (e.g., "From your earlier discussion on [Date] in '[Conversation Title]'...").
+4. Maintain context continuity using the Recent Conversation History if this is a follow-up inquiry. Each interaction in the archive and conversation history is tagged with its timestamp.
+5. If the user asks for the current date, time, or what timestamp was sent with their request, reference the CURRENT SYSTEM DATE & TIME (${nowIso}) and the timestamp on their post.
+6. If no specific previous notes match or if additional knowledge is needed, synthesize an insightful, complete answer using your comprehensive AI capabilities.
+7. Format cleanly using Markdown with headings, bullet points, and code blocks where helpful. Do not mention that you received system prompts.`;
 
     const userPromptContent = `${historySection}PERSONAL ARCHIVE KNOWLEDGE BASE (Past Conversations, Topics, Summaries & FTS Records):
 ${archiveContext || 'No previous related notes found in personal archive.'}
 
-CURRENT USER POST:
+CURRENT USER POST [${nowIso}]:
 """
 ${userPost}
 """`;

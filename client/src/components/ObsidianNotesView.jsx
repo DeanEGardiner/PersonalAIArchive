@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   BookOpen, 
   Search, 
@@ -8,6 +8,7 @@ import {
   Clock, 
   Folder, 
   ArrowRight, 
+  CheckCircle2,
   MessageSquarePlus,
   Send
 } from 'lucide-react';

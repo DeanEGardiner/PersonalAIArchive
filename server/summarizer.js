@@ -120,7 +120,7 @@ ${conversationArchiveText}`;
 
     console.log(`[Summarizer] Running summarization (mode=${mode}, provider=${provider}, model=${model})...`);
     let jsonResponse = '';
-    await providerRouter.streamChat({
+    const resText = await providerRouter.streamChat({
       provider,
       model,
       messages: [{ role: 'user', content: prompt }],
@@ -129,6 +129,9 @@ ${conversationArchiveText}`;
       jsonMode: true,
       onChunk: (chunk) => { jsonResponse += chunk; }
     });
+    if (!jsonResponse.trim() && resText) {
+      jsonResponse = resText;
+    }
 
     let resultData;
     try {
