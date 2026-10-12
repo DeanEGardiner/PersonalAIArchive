@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Key, Server, Check, FolderSync } from 'lucide-react';
+import { X, Key, Server, Check, FolderSync, Database, Download, Upload } from 'lucide-react';
 import { api } from '../api';
+import RestoreModal from './RestoreModal';
 
-export default function SettingsModal({ isOpen, onClose, onSaved }) {
+export default function SettingsModal({ isOpen, onClose, onSaved, onRestoreComplete }) {
   const [geminiKey, setGeminiKey] = useState('');
   const [openAiKey, setOpenAiKey] = useState('');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
@@ -11,6 +12,7 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
   const [obsidianStatus, setObsidianStatus] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isRestoreOpen, setIsRestoreOpen] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -183,6 +185,39 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
               Absolute path to your local Obsidian vault. Sync will create an <code>AI Archive</code> folder inside this vault.
             </span>
           </div>
+
+          {/* Data Portability & Backup */}
+          <div className="form-group" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+            <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Database size={15} color="var(--accent-primary)" />
+              <span>Database Backup &amp; Data Portability</span>
+            </label>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '4px' }}>
+              <a
+                href="/api/export/json"
+                download
+                className="btn-secondary"
+                style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', padding: '7px 12px' }}
+                title="Download full JSON snapshot of conversations, messages, and topics"
+              >
+                <Download size={13} />
+                <span>Download JSON Backup</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setIsRestoreOpen(true)}
+                className="btn-secondary"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', padding: '7px 12px', cursor: 'pointer' }}
+                title="Restore a JSON backup into this instance"
+              >
+                <Upload size={13} />
+                <span>Restore JSON Backup</span>
+              </button>
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              Export or restore entire conversational history across instances with full SQLite FTS5 re-indexing.
+            </span>
+          </div>
         </div>
 
         <div className="modal-footer">
@@ -206,6 +241,16 @@ export default function SettingsModal({ isOpen, onClose, onSaved }) {
           </button>
         </div>
       </div>
+
+      {/* Restore JSON Backup Modal */}
+      <RestoreModal
+        isOpen={isRestoreOpen}
+        onClose={() => setIsRestoreOpen(false)}
+        onRestored={async (res) => {
+          await onRestoreComplete?.(res);
+          onSaved?.();
+        }}
+      />
     </div>
   );
 }

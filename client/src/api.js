@@ -234,5 +234,34 @@ export const api = {
 
   getObsidianNoteById(id) {
     return request(`/api/obsidian/notes/${id}`);
+  },
+
+  // Database Backup & Restore
+  previewBackup(formDataOrData) {
+    if (formDataOrData instanceof FormData) {
+      return request('/api/restore/preview', {
+        method: 'POST',
+        body: formDataOrData
+      });
+    }
+    return request('/api/restore/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formDataOrData)
+    });
+  },
+
+  restoreBackup(formDataOrData) {
+    if (formDataOrData instanceof FormData) {
+      return request('/api/restore/json', {
+        method: 'POST',
+        body: formDataOrData
+      });
+    }
+    return request('/api/restore/json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formDataOrData)
+    });
   }
 };

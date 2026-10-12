@@ -9,18 +9,21 @@ import {
   Cpu, 
   ExternalLink,
   Filter,
-  RefreshCw
+  RefreshCw,
+  Upload
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
+import RestoreModal from './RestoreModal';
 
-export default function ArchiveView({ conversations, onSelectConversation, setCurrentView, onSummarizeUrl }) {
+export default function ArchiveView({ conversations, onSelectConversation, setCurrentView, onSummarizeUrl, onRestoreComplete }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedProviderFilter, setSelectedProviderFilter] = useState('all');
   const [isSyncingObsidian, setIsSyncingObsidian] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState(null);
+  const [isRestoreOpen, setIsRestoreOpen] = useState(false);
 
   const handleSyncObsidian = async () => {
     if (isSyncingObsidian) return;
@@ -113,6 +116,16 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
             <Download size={14} />
             <span>JSON Backup</span>
           </a>
+          <button
+            type="button"
+            onClick={() => setIsRestoreOpen(true)}
+            className="btn-secondary"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
+            title="Restore a JSON archive backup to this instance"
+          >
+            <Upload size={14} />
+            <span>Restore Backup</span>
+          </button>
         </div>
       </div>
 
@@ -249,6 +262,13 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
           )}
         </div>
       )}
+
+      {/* Restore JSON Backup Modal */}
+      <RestoreModal 
+        isOpen={isRestoreOpen}
+        onClose={() => setIsRestoreOpen(false)}
+        onRestored={onRestoreComplete}
+      />
     </div>
   );
 }

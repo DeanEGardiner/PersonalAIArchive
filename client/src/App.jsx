@@ -55,16 +55,25 @@ export default function App() {
     }
   };
 
-  const loadConversations = async () => {
+  const loadConversations = async (forceSelectFirst = false) => {
     try {
       const convs = await api.getConversations();
       setConversations(convs);
-      if (convs.length > 0 && !activeConvId) {
+      if (convs.length > 0 && (!activeConvId || forceSelectFirst || !convs.some(c => c.id === activeConvId))) {
         selectConversation(convs[0].id);
       }
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
+  };
+
+  const handleRestoreComplete = async () => {
+    await Promise.all([
+      loadConversations(true),
+      loadSummaries(),
+      loadCategories(),
+      loadHealth()
+    ]);
   };
 
   const selectConversation = async (id, keepCurrentModel = false) => {
@@ -361,6 +370,7 @@ export default function App() {
             onSelectConversation={selectConversation}
             setCurrentView={setCurrentView}
             onSummarizeUrl={handleSummarizeUrlToThread}
+            onRestoreComplete={handleRestoreComplete}
           />
         )}
 
@@ -386,6 +396,7 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onSaved={loadHealth}
+        onRestoreComplete={handleRestoreComplete}
       />
     </div>
   );

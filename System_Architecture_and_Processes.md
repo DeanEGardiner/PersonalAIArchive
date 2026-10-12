@@ -6,93 +6,136 @@ This document outlines the complete system architecture, component breakdown, ke
 
 ## 1. System Outline & Component Hierarchy
 
-The application is structured into four primary layers designed for high modularity, offline-first reliability, cost control, and seamless multi-provider AI communication.
+The application is structured into four primary layers designed for high modularity, offline-first reliability, cost control, strict privacy isolation, and multi-provider AI communication.
 
 ```
 Personal AI Archive
 ├── 1. Presentation Layer (Frontend UI - React 19 + Vite @ Port 5173)
-│   ├── Chat Workspace (Prompt input, streaming SSE responses, provider/model switcher, stop generation button)
-│   ├── Google Search AI Integration (Live query modal, AI overview parsing, web citations, composer insertion)
-│   ├── Interactive Hyperlink Summarizer (Hover tooltip: "Please provide an AI summary of this page", automatic thread response)
-│   ├── Context Injection Selector (Toggle ON/OFF, 3 modes: Latest Summaries, Selected Topics Modal, Smart Keyword FTS)
-│   ├── Archive Explorer (Chronological timeline, SQLite FTS5 search, provider filter, message inspector)
-│   ├── Intelligence Dashboard / SummaryView (Topic categorization badges, Global Executive Digest, Category notes)
-│   ├── Data Portability Hub (One-click Obsidian Vault .zip streaming export & JSON database backup)
-│   └── Settings Modal (Gemini API Key, OpenAI API Key, Ollama endpoint, LM Studio endpoint, SQLite persistence)
+│   ├── Chat Workspace (ChatView.jsx)
+│   │   ├── Multi-Mode Triple Action Composer (Standard Post, Archive AI Analysis, Google Search AI)
+│   │   ├── Real-time SSE Token Streaming with live optimistic message updates
+│   │   ├── Instant Stop Generation button with server-side AbortController signal
+│   │   ├── Multimodal Attachment Bar (Image preview, upload, drag-and-drop)
+│   │   └── Dynamic Source Cards & Citations (Domain badges, external link cards)
+│   ├── Obsidian Notes Explorer (ObsidianNotesView.jsx)
+│   │   ├── Live Vault Sync Status indicator & manual "Sync Vault Now" trigger
+│   │   ├── Debounced Full-Text Search across imported vault notes (obsidian_notes_fts)
+│   │   ├── Note Inspector (Metadata, path, timestamps, preview)
+│   │   └── Context Insertion Actions (Insert into composer, start dedicated chat with note)
+│   ├── Archive Explorer (ArchiveView.jsx)
+│   │   ├── Chronological conversation timeline with provider/model filtering
+│   │   ├── Full-Text Search across historical turns (messages_fts)
+│   │   └── Message inspector & conversation deletion
+│   ├── Intelligence Dashboard (SummaryView.jsx)
+│   │   ├── Topic categorization cards & recommendation badges
+│   │   ├── Global Executive Archive Digest viewer
+│   │   └── Summarization Trigger (Incremental vs. Full Re-run with private AI enforcement)
+│   ├── Settings Modal (SettingsModal.jsx)
+│   │   ├── Provider API Keys (Gemini, OpenAI) with secure masking (••••<last4>)
+│   │   ├── Local Provider Base URLs (Ollama default :11434, LM Studio default :1234/v1)
+│   │   ├── Obsidian Vault path configuration with debounced validation
+│   │   └── Privacy Enforcement Toggle ("Use only private AI for summarization")
+│   ├── Interactive Hyperlink Summarizer (FormattedText.jsx)
+│   │   └── Hover pop-up tooltip: "Please provide an AI summary of this page"
+│   └── Data Portability Hub
+│       └── One-click streaming Obsidian Vault (.zip) export & complete JSON database backup
 │
 ├── 2. Core Service Layer (Application Engine - Node.js Express @ Port 3002)
-│   ├── Model Provider Router (Standardizes payloads across Google Gemini, OpenAI, Ollama, LM Studio)
-│   ├── Active Stream Controller (AbortController management for instant stop generation & partial saving with status='interrupted')
-│   ├── Context Injection Engine (Dynamic retrieval: Latest Summaries, Selected Category IDs, or FTS5 snippet ranking)
-│   ├── Summarization & Topic Extraction Pipeline (Incremental vs. Full re-run, Markdown file generation, SQLite updates)
-│   ├── Google Search AI Integration (Live web search querying & structured markdown synthesis)
-│   └── Portability & Vault Archiver (Streaming dynamic .zip via archiver with YAML frontmatter, wikilinks, and indices)
+│   ├── Security & Host Binding
+│   │   ├── Strict localhost isolation (bound exclusively to 127.0.0.1)
+│   │   ├── Origin-restricted CORS middleware (localhost / 127.0.0.1 origins only)
+│   │   └── API Key Masking Engine (GET /api/settings masks secrets; POST ignores masked values)
+│   ├── Central Configuration Module (config.js)
+│   │   ├── Unified model defaults, fallback model lists, and provider URL normalization
+│   │   └── Conversation history token/turn budget management (12 turns / 4,000 chars)
+│   ├── Model Provider Router (providers.js)
+│   │   ├── Unified streaming interface (streamChat, analyzeArchiveKnowledge, googleSearchAI)
+│   │   ├── Live System Date & Time Anchor injection into model system prompts
+│   │   ├── Provider Health Probing with 10-minute memory cache for Gemini model list
+│   │   ├── Robust chunk-buffered line parsing for Ollama NDJSON streams
+│   │   └── LM Studio json_schema constraint support with fallback
+│   ├── Two-Way Obsidian Vault Sync Engine (obsidianSync.js)
+│   │   ├── Vault partition isolation: imports notes outside "AI Archive/"; exports to "AI Archive/"
+│   │   ├── Incremental change detection via filesystem mtime and SHA-256 checksums
+│   │   └── Transactional database upsert with automatic FTS5 trigger synchronization
+│   ├── Summarization & Topic Extraction Pipeline (summarizer.js)
+│   │   ├── Strict private AI enforcement (rejects cloud routing when enabled)
+│   │   ├── Deduplication engine: upserts active summaries and soft-deletes superseded records
+│   │   └── Dual persistence: writes both SQLite rows and Markdown notes on disk
+│   └── Unified Post & Streaming API (index.js)
+│       └── Server-Sent Events (SSE) streaming pipeline on /api/conversations/:id/posts
 │
 ├── 3. Data & Storage Layer (Local Persistence & Security)
-│   ├── SQLite Embedded Database (archive.db via better-sqlite3 with WAL mode enabled)
-│   ├── FTS5 Virtual Index (messages_fts with automatic triggers on insert/update/delete)
-│   ├── Local Summaries Vault (data/summaries/*.md generated notes with YAML frontmatter)
-│   ├── Local Media Store (data/media/ for binary attachment persistence)
-│   ├── Portable Backup Handler (Streaming dynamic Obsidian Vault .zip & complete JSON snapshot)
-│   └── Settings Table (Encrypted local persistence for provider keys and base URLs)
+│   ├── SQLite Embedded Database (data/archive.db via better-sqlite3 with WAL mode)
+│   ├── Versioned Migration Engine (PRAGMA user_version tracking migrations 1, 2, 3)
+│   ├── Performance Indexes (messages(conv_id, ts), messages(ts), attachments(msg_id), etc.)
+│   ├── External-Content FTS5 Virtual Tables (messages_fts and obsidian_notes_fts)
+│   │   └── Automatic SQLite database triggers (ai, ad, au) on messages & obsidian_notes
+│   ├── Local Summaries Vault (data/summaries/*.md generated digest notes with YAML frontmatter)
+│   ├── Local Media Store (data/media/ for image attachments with Vite proxy integration)
+│   └── Portable Backup Handler (Streaming dynamic Obsidian Vault .zip via archiver)
 │
 └── 4. AI Provider Integration Layer (Adapters)
-    ├── Google Gemini Adapter (@google/genai SDK, gemini-3.6-flash, 3.7-flash, 3.8-flash, 2.5-pro)
-    ├── OpenAI Adapter (openai SDK, gpt-4o-mini, gpt-4o, o3-mini, gpt-4-turbo)
-    ├── Ollama Adapter (Local offline REST API on default port 11434 with dynamic model discovery)
-    └── LM Studio Adapter (Local offline OpenAI-compatible API on default port 1234 with dynamic model discovery)
+    ├── Google Gemini Adapter (@google/genai SDK, gemini-3.8-flash, live web search grounding)
+    ├── OpenAI Adapter (openai SDK, gpt-4o-mini, gpt-4o, o3-mini)
+    ├── Ollama Adapter (Local offline REST API on default port 11434 with format: 'json')
+    └── LM Studio Adapter (Local OpenAI-compatible API on default port 1234 with json_schema)
 ```
 
 ---
 
-## 2. Recommended Storage, Synchronization & Encryption Architecture
+## 2. Storage, Synchronization & Data Schema Design
 
-### Selection: **SQLite with FTS5 Full-Text Search + Local Blob Store + Sync Metadata**
-- **Zero Configuration**: A single, local `.db` file requiring no background database servers.
-- **Data Integrity & Speed**: Millisecond reads/writes, transactional safety, and native timestamp handling.
-- **Search Capabilities**: SQLite's built-in `FTS5` engine allows instant keyword search across tens of thousands of conversations.
-- **Local Blob Store**: Images, documents, and media are saved in a local app directory (e.g. `~/Library/Application Support/PersonalAIArchive/media/` on macOS). Only lightweight file pointers, MIME types, and thumbnail hashes are saved in SQLite, preventing database bloat.
-- **Portability**: Backups can be taken via file copy, and built-in export produces an Obsidian-compatible Markdown vault with YAML frontmatter.
-- **Future Extensibility**: Supports vector embeddings (e.g. via `sqlite-vec`) for semantic search.
+### Storage Architecture: SQLite with External-Content FTS5 + Local Blob Store
+- **Single Source of Truth**: All structured data resides in a local `archive.db` using `better-sqlite3` with Write-Ahead Logging (`WAL`) enabled for fast concurrent reads and atomic writes.
+- **Versioned Migrations**: Managed via `PRAGMA user_version`. Schema enhancements, indexes, and virtual tables run incrementally on startup.
+- **External-Content Full-Text Search (FTS5)**:
+  - `messages_fts` references `messages(rowid)` without duplicating text storage on disk.
+  - `obsidian_notes_fts` references `obsidian_notes(rowid)` indexing `title`, `content`, and `rel_path`.
+  - Database triggers (`AFTER INSERT`, `AFTER DELETE`, `AFTER UPDATE`) synchronize the FTS indexes automatically upon any table modification.
+- **Local Blob Store**: Binary image uploads are written to `data/media/` and served by Express at `/media/`. The client dev server proxies `/media` directly to the backend.
 
-### Multi-Platform Synchronization Architecture
+### Two-Way Obsidian Vault Synchronization Architecture
 
-To synchronize across desktop, web, and mobile platforms without requiring a central proprietary backend, the architecture supports two primary synchronization models:
+The application synchronizes bi-directionally with a local Obsidian Vault while preserving strict boundary safety:
 
-1. **Local Network P2P / Direct Sync (Offline & Private)**:
-   - Synchronizes devices over local Wi-Fi via mDNS / Bonjour discovery and a secure REST or WebSocket delta-sync protocol.
-   - Ideal for users who keep their AI chats 100% private and offline on their local home network.
-2. **Encrypted Cloud Relay / Storage Bucket (Asynchronous Multi-Device Sync)**:
-   - Uses self-hosted or cloud storage (e.g. WebDAV, iCloud Drive, Google Drive, or an S3/MinIO bucket) to deposit encrypted transaction deltas / SQLite snapshots.
-   - Sync works even when devices are never powered on at the same time.
+```
+Obsidian Vault Root (<VaultPath>/)
+├── Notes/               ──┐
+├── Projects/              │  IMPORT DIRECTION (Vault -> DB)
+├── Daily/                 │  - Scans markdown files OUTSIDE "AI Archive/"
+└── Any_Other_Folder/    ──┘  - Skips unchanged files via mtime & SHA-256 checks
+                              - Upserts into obsidian_notes & obsidian_notes_fts
+                              - Never modified or deleted by the export process
+├── AI Archive/          ──┐
+│   ├── Conversations/     │  EXPORT DIRECTION (DB -> Vault)
+│   └── Summaries/       ──┘  - Writes timestamped markdown exports with YAML frontmatter
+                              - Ignored by the import scanner to prevent feedback loops
+```
 
-#### Sync Mechanism: Timestamp-Based Delta Replication with CRDT / LWW (Last-Write-Wins)
-- Every record includes a universal unique identifier (`UUIDv4`), a UTC `updated_at` timestamp, and an origin device ID (`device_id`).
-- Deletions are tracked via a **soft-delete tombstone** (`is_deleted = 1`) so removals replicate cleanly without re-surfacing old records.
-- Incremental sync queries only records where `updated_at > last_synced_timestamp`.
+1. **Vault Partitioning & Boundary Isolation**:
+   - Folders ignored during import: `AI Archive/`, `.obsidian`, `.trash`, `.git`, `attachments`, `node_modules`.
+   - The export process writes **exclusively** to `<Vault>/AI Archive/`. It will **never** overwrite, rename, or touch user notes in other folders.
+2. **Incremental High-Speed Sync**:
+   - Compares disk file `mtime` with `mtime_ms` stored in SQLite. If unchanged, file reads and hashing are skipped entirely.
+   - If `mtime` changed, computes the SHA-256 hash. If content matches, only the timestamp is updated.
+   - All DB operations execute within a single atomic `db.transaction`.
+3. **Triggered FTS Indexing**:
+   - Because `obsidian_notes_fts` uses external content and SQLite triggers, note insertions and edits automatically update search rankings without manual application SQL statements.
 
-### Encryption Architecture (Post-Prototype Blueprint)
+---
 
-While optional in the prototype, the architecture is designed so encryption can be turned on without refactoring the application code:
-
-1. **At-Rest Database Encryption (SQLCipher)**:
-   - Transparent, page-level 256-bit AES encryption for SQLite.
-   - The key is derived from a user passphrase using Argon2id / PBKDF2 and stored securely in the platform's native keychain (macOS Keychain, iOS Secure Enclave, Android Keystore).
-2. **Zero-Knowledge Sync Payload Encryption**:
-   - Before syncing records over the wire or pushing them to cloud storage, payloads are encrypted end-to-end (E2EE) with XChaCha20-Poly1305 or AES-256-GCM.
-   - Cloud relays or file shares cannot read the conversations or metadata.
-
-### Sync-Ready & Media-Aware Data Schema Design
+### Data Schema Design
 
 ```mermaid
 erDiagram
-    CONVERSATION ||--o{ MESSAGE : contains
-    MESSAGE ||--o{ MESSAGE_CATEGORY : tagged_with
-    CATEGORY ||--o{ MESSAGE_CATEGORY : includes
-    CATEGORY ||--o{ ARCHIVE_SUMMARY : summarized_in
-    MESSAGE ||--o{ ATTACHMENT : attaches
+    CONVERSATIONS ||--o{ MESSAGES : contains
+    MESSAGES ||--o{ ATTACHMENTS : attaches
+    CATEGORIES ||--o{ ARCHIVE_SUMMARIES : summarizes
+    OBSIDIAN_NOTES ||--|| OBSIDIAN_NOTES_FTS : indexes_into
+    MESSAGES ||--|| MESSAGES_FTS : indexes_into
 
-    CONVERSATION {
+    CONVERSATIONS {
         string id PK
         string title
         timestamp created_at
@@ -103,10 +146,11 @@ erDiagram
         string default_model
     }
 
-    MESSAGE {
+    MESSAGES {
         string id PK
         string conversation_id FK
         string role
+        string post_type
         text content
         string status
         timestamp timestamp
@@ -118,7 +162,7 @@ erDiagram
         text metadata_json
     }
 
-    ATTACHMENT {
+    ATTACHMENTS {
         string id PK
         string message_id FK
         string file_name
@@ -131,7 +175,7 @@ erDiagram
         boolean is_deleted
     }
 
-    CATEGORY {
+    CATEGORIES {
         string id PK
         string name
         text description
@@ -141,7 +185,7 @@ erDiagram
         boolean is_deleted
     }
 
-    ARCHIVE_SUMMARY {
+    ARCHIVE_SUMMARIES {
         string id PK
         string category_id FK
         text summary_text
@@ -153,356 +197,359 @@ erDiagram
         boolean is_deleted
         string summary_type
     }
+
+    OBSIDIAN_NOTES {
+        string id PK
+        string file_name
+        string rel_path
+        string title
+        text content
+        string checksum
+        integer mtime_ms
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    SETTINGS {
+        string key PK
+        text value
+        timestamp updated_at
+    }
 ```
 
 ---
 
 ## 3. Key Processes & Execution Flows
 
-### Process 1: Unified Chat, Streaming Interruption & Automatic Archiving
+### Process 1: Unified Multi-Mode Posting & Real-Time SSE Streaming
+
+The unified posting flow merges standard messages, archive knowledge synthesis, and live web search into a single streaming endpoint (`/api/conversations/:id/posts?stream=true`).
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User
-    participant UI as Chat Interface
-    participant Engine as Model Router & Stream Controller
-    participant DB as SQLite / FTS5
-    participant Provider as AI Provider (Gemini/OpenAI/Ollama/LMStudio)
-
-    User->>UI: Types query & selects Provider/Model
-    UI->>DB: Persist User Message (Timestamped, Device ID)
-    UI->>Engine: Send query (with optional budget-managed archive context)
-    Engine->>Provider: Forward normalized request (with AbortSignal)
-    Provider-->>Engine: Stream token chunks
-    Engine-->>UI: Real-time token streaming to user
-    alt User clicks "Stop Generating"
-        User->>UI: Click Stop
-        UI->>Engine: AbortController.abort()
-        Engine-->>Provider: Terminate HTTP stream connection
-        Engine->>DB: Persist Partial Assistant Response (status="interrupted")
-    else Generation completes normally
-        Provider-->>Engine: Stream complete
-        Engine->>DB: Persist Assistant Response (status="completed")
-    end
-    Engine->>DB: Update Full-Text Search Index (FTS5)
-```
-
-1. **User input**: The user types a message and clicks send.
-2. **Immediate local write**: The message is saved locally to SQLite with a microsecond-accurate UTC timestamp and local device ID before the network request is initiated.
-3. **Normalization & Dispatch**: The Provider Router formats the conversation into the required schema for the chosen AI service.
-4. **Streaming Delivery & Cancellation**: Responses stream back in real time. If the user clicks **Stop Generating**, the stream cancels immediately via `AbortController`, and whatever partial response was generated is preserved in SQLite with `status: "interrupted"`.
-5. **Archive Commit**: The final or interrupted message updates the FTS index automatically.
-
----
-
-### Process 2: Provider Health Probing & Offline Fallback
-
-```mermaid
-flowchart TD
-    AppLaunch([App Launch / Interval]) --> Probe[Probe Provider Endpoints]
-    Probe --> TestCloud[Test Cloud APIs: Gemini & OpenAI via light ping]
-    Probe --> TestLocal[Test Local Endpoints: Ollama :11434 & LMStudio :1234]
-    
-    TestCloud --> UpdatePills[Update Status Indicators in UI: Green / Red]
-    TestLocal --> UpdatePills
-    
-    UserPrompt[User Sends Message to Cloud Model] --> CheckNet{Internet Reachable?}
-    CheckNet -->|Yes| SendNormal[Execute Request]
-    CheckNet -->|No| PromptFallback[Offer 1-Click Fallback to Local Model: e.g. Ollama Llama 3]
-```
-
-1. **Passive Health Check**: Probes local ports (11434, 1234) and network reachability without user friction.
-2. **Status Pills**: Clear visual indicators show whether local models and cloud providers are online.
-3. **Graceful Offline Fallback**: If internet connectivity drops, the app offers a one-click redirect to your local Ollama or LM Studio instance.
-
----
-
-### Process 3: Token Budgeting & Archive Context Injection (Temporal & Meta-Queries)
-
-To allow the user to ask meta-questions about past interactions (e.g., *"Have we had a previous conversation on this topic?"*, *"When was that conversation?"*, *"What were the recommendations of that conversation?"*), the context injection engine structures archive data chronologically with explicit temporal metadata and citations.
-
-```mermaid
-flowchart TD
-    UserPrompt[User Prompt: e.g. 'When did we discuss X and what were the recommendations?'] --> CheckCheckbox{Checkbox: 'Use Archived Data' Checked?}
-    CheckCheckbox -->|No| SendRaw[Send standard prompt to AI]
-    CheckCheckbox -->|Yes| FetchMetadata[Query Archive Summaries & Chronological Timeline Index]
-    
-    FetchMetadata --> QueryStrategy{Query Type Detection}
-    QueryStrategy -->|Meta/Temporal Query| AssembleTimeline[Assemble Chronological Digest: Dates, Categories, Thread Titles, Key Recommendations]
-    QueryStrategy -->|Topic Query| AssembleTopic[Assemble Category Summaries + Relevant FTS5 Excerpts]
-    
-    AssembleTimeline --> BudgetCheck{Exceeds Archive Token Budget?}
-    AssembleTopic --> BudgetCheck
-    
-    BudgetCheck -->|Yes| Truncate[Trim to token budget, prioritizing latest/most relevant milestones]
-    BudgetCheck -->|No| BuildSystemPrompt[Wrap into System Prompt Context Block]
-    Truncate --> BuildSystemPrompt
-    
-    BuildSystemPrompt --> WrapPrompt["Prepend Structured Context to Prompt (Includes: timestamps, categories, recommendation bullets)"]
-    WrapPrompt --> SendModel[Send augmented payload to chosen AI Model]
-    SendModel --> RenderResponse[AI answers with exact dates, past conclusions, and thread links]
-```
-
-#### Active Context Retrieval Modes in UI & Engine
-
-Users can toggle **Archive Memory: ON/OFF** in the chat header and choose between three retrieval strategies:
-
-1. **`Latest Summaries` Mode**:
-   - Injects the **Global Executive Archive Digest** along with the latest generated topic/category summaries.
-   - Ideal for broad grounding across major project decisions, high-level context, and ongoing threads.
-2. **`Selected Topics` Mode**:
-   - Provides an interactive **Topic Selection Modal** (`TopicSelectionModal.jsx`) allowing users to check/uncheck specific extracted categories (e.g. `Astronomy & Physics`, `AI & Technology`, `Live Events & Music History`).
-   - Only messages, summaries, and recommendations associated with the selected topic IDs are assembled into the context window.
-   - Live badge counter displays the number of active topics (e.g., `3 topics active — Edit`).
-3. **`Smart Keyword FTS` Mode**:
-   - Tokenizes key search entities from the user's active prompt.
-   - Executes an instant match against SQLite `messages_fts` virtual table (`MATCH ?`), extracting the highest-ranking snippet excerpts from historical user and assistant turns.
-   - Highly effective for precise factual queries (e.g., specific dates, exact numbers, or unique names).
-
-#### Grounding Schema for Injected Context
-When Archive Memory is enabled, the context injection engine prepends a structured Markdown memory block:
-```markdown
-[ARCHIVE MEMORY CONTEXT]
-The user has enabled local archive access. You have access to their historical conversation digests and timestamped milestones:
-
---- SUMMARY RECORD ---
-- Thread ID: #conv-8492
-- Category: Mobile Architecture
-- Date & Time: 2026-04-12 14:32 UTC
-- Title / Topic: Discussion on SQLite vs Flat File Synchronization
-- Summary & Key Findings: Evaluated SQLite with FTS5 and CRDT for cross-device synchronization.
-- Concrete Recommendations Made:
-  1. Use SQLite with soft-delete tombstones for conflict resolution.
-  2. Implement page-level SQLCipher encryption.
----
-
-Instructions: Answer the user's inquiry referencing past dates, thread context, and specific recommendations made in previous sessions when relevant.
-```
-
----
-
-### Process 4: AI Summarization, Categorization & Markdown Note Sync
-
-```mermaid
-flowchart TD
-    Start([User Triggers Summarize & Categorize]) --> CheckPrivacy{Settings: 'Use Only Private AI' Enabled?}
-    CheckPrivacy -->|Yes| ForceLocal[Restrict Model Choice to Local: Ollama or LM Studio]
-    CheckPrivacy -->|No| AllowAll[Allow Choice of Any Configured Model: Gemini, OpenAI, Ollama, LM Studio]
-    
-    ForceLocal --> ModeSelect{Select Mode: Incremental vs Full Re-summarize}
-    AllowAll --> ModeSelect
-    
-    ModeSelect -->|Incremental| CheckLast[Fetch coverage_end of latest summary]
-    CheckLast --> CalcDelta[Count new messages & estimate tokens]
-    ModeSelect -->|Full Re-Summarize| CalcAll[Count all messages & estimate tokens]
-    
-    CalcDelta --> ShowPreview[Display Estimated Tokens & Summarizer Model Confirmation]
-    CalcAll --> ShowPreview
-    
-    ShowPreview --> Confirm{User Confirms?}
-    Confirm -->|Cancel| Abort([Canceled])
-    Confirm -->|Proceed| Batch[Batch messages into context windows]
-    
-    Batch --> SendAI[Execute Structured Summarization & Category Generation]
-    SendAI --> ParseResp[Parse Structured JSON: Categories, Chronological Summaries, Recommendations]
-    
-    ParseResp --> SaveDB[(Update SQLite: Upsert Categories, Summaries & Message Links)]
-    ParseResp --> WriteMD[(Write / Update Markdown Files in Obsidian-Compatible Vault Folder)]
-    SaveDB --> Done([Summarization Complete - UI & Notes Updated])
-    WriteMD --> Done
-```
-
-1. **Private AI Enforcement in Settings**:
-   - When **"Use only private AI for summarization and categorization"** is enabled in Settings, the background engine strictly routes jobs to local offline instances (Ollama or LM Studio). No archive text is ever transmitted over the internet to external APIs.
-2. **Dual Persistence (SQLite + Markdown Note Files)**:
-   - In addition to indexing in SQLite, each category and summary is written as a clean Markdown note in a designated folder (e.g. `~/Documents/PersonalAIArchive/Summaries/`).
-   - Notes include YAML frontmatter, timestamps, and backlinks:
-     ```markdown
-     ---
-     category: "Project Planning"
-     updated: "2026-09-20T13:15:00Z"
-     source: "Personal AI Archive"
-     ---
-     # Project Planning Summary
-     
-     ## Timeline & Evolution
-     - **2026-04-12**: Initial exploration of multi-provider AI architectures.
-     - **2026-09-20**: Finalized synchronization specifications and private offline summarization.
-     
-     ## Key Recommendations
-     - Use SQLite FTS5 for sub-millisecond local keyword indexing.
-     - Isolate media binaries to local filesystem storage.
-     ```
-   - Notes can be opened and edited directly in **Obsidian**, **Logseq**, or standard text editors.
-3. **Incremental vs. Full Updates**:
-   - **Incremental**: Only processes conversations created since the last summary timestamp, updating existing category Markdown notes with fresh insights.
-   - **Full Re-summarize**: Recalibrates all categories and rebuilds Markdown notes from scratch.
-
----
-
-### Process 5: Multi-Platform Database Synchronization Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as User / Periodic Timer
-    participant DeviceA as Device A (Mac)
-    participant SyncEngine as Sync Engine (Local/Relay)
-    participant DeviceB as Device B (Phone / Secondary)
-
-    User->>DeviceA: Trigger Sync (Manual or Auto-Periodic)
-    DeviceA->>DeviceA: Query delta: Records WHERE updated_at > last_sync_time
-    DeviceA->>SyncEngine: Push Delta Changes (JSON / Protocol Buffer batch)
-    DeviceB->>SyncEngine: Pull Delta Changes (since Device B last_sync_time)
-    SyncEngine-->>DeviceB: Transmit Device A Deltas
-    DeviceB->>DeviceB: Upsert into SQLite using LWW (Last-Write-Wins on updated_at)
-    DeviceB->>DeviceB: Re-index FTS5 for new / updated messages
-    DeviceB->>SyncEngine: Acknowledge & Send Device B local Deltas (if any)
-    SyncEngine-->>DeviceA: Transmit Device B Deltas
-    DeviceA->>DeviceA: Upsert & Update Sync Timestamp
-```
-
-1. **Delta Extraction**: Each device queries records with an `updated_at` timestamp greater than its last known sync checkpoint.
-2. **Conflict Resolution (Last-Write-Wins)**: If the same conversation or summary is modified on both devices, the record with the most recent UTC timestamp takes precedence. Because chat messages are append-only by nature, conflicts are rare.
-3. **Soft-Delete Propagation**: When a conversation or message is removed, `is_deleted = 1` and a fresh `updated_at` timestamp are recorded and propagated, removing it from active views on all devices without data collision.
-4. **FTS5 Re-index**: Incoming messages from other devices are automatically inserted into the local `messages_fts` index so cross-device searches are immediately available.
-
----
-
-### Process 6: Data Portability & Obsidian Vault (.zip) Export
-
-```mermaid
-flowchart TD
-    User([User clicks 'Obsidian Vault (.zip)']) --> Req[GET /api/export/markdown]
-    Req --> Archiver[Initialize streaming ZipArchive via archiver]
-    
-    Archiver --> FetchSumm[Pack Summaries/ folder: data/summaries/*.md + YAML frontmatter]
-    Archiver --> FetchConv[Pack Conversations/ folder: YYYY-MM-DD_Title.md notes]
-    Archiver --> GenIndex[Generate Vault_Index.md & README.md with Obsidian Wikilinks]
-    
-    FetchSumm --> StreamOut[Stream Content-Type: application/zip]
-    FetchConv --> StreamOut
-    GenIndex --> StreamOut
-    
-    StreamOut --> ZipDownload([Download Personal_AI_Archive_Obsidian_Vault.zip])
-    
-    UserJSON([User clicks 'JSON Backup']) --> ReqJSON[GET /api/export/json]
-    ReqJSON --> JSONBackup([Download personal_ai_archive_backup.json])
-```
-
-1. **Obsidian Vault (.zip) Streaming Generator (`/api/export/markdown`)**:
-   - Streams an on-the-fly, fully populated Obsidian Vault without temporary disk bloat using Node.js `archiver` (`ZipArchive`).
-   - **`Summaries/` Folder**: Packs all AI-generated global summaries (`Global_Archive_Digest.md`) and extracted category digests (`AI___Technology.md`, `Astronomy___Scientific_Reference.md`, etc.), complete with YAML headers.
-   - **`Conversations/` Folder**: Converts every conversation in the archive into an Obsidian-ready note (`YYYY-MM-DD_Title.md`). Includes frontmatter tags (`#ai-archive`, topic tags), timestamped user/assistant message turns, and model badges.
-   - **`Vault_Index.md` & `README.md`**: Master index note linking to every summary and conversation using Obsidian wikilinks (`[[Summaries/...]]`, `[[Conversations/...]]`).
-   - Accessible via download buttons in both **Archive Explorer** (`ArchiveView.jsx`) and the **Intelligence Dashboard** (`SummaryView.jsx`).
-2. **Standard JSON Backup (`/api/export/json`)**:
-   - Exports the entire relational SQLite dataset (`conversations`, `messages`, `categories`, `archive_summaries`) into a single structured JSON file.
-3. **Chat Import Pipeline**:
-   - Designed to ingest legacy JSON chat archives (ChatGPT, Claude) and batch-index them into SQLite and FTS5.
-
----
-
-### Process 7: Google AI Search Integration & Hyperlink Page Summarization
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant UI as Chat Workspace & FormattedText
-    participant Modal as GoogleSearchModal
+    participant UI as ChatView / Composer
+    participant API as client/src/api.js (streamPost)
     participant Server as Express Backend (:3002)
-    participant Provider as AI Search Provider (Gemini / Web)
+    participant Provider as Model Provider Router
+    participant DB as SQLite (archive.db)
+
+    User->>UI: Types inquiry, attaches image, selects Mode (Standard / AI Analysis / Google Search)
+    UI->>API: streamPost(convId, { content, mode, provider, model, attachment })
+    API->>Server: POST /api/conversations/:id/posts?stream=true
+    Server->>DB: Persist User Message (timestamp = now)
+    Server-->>API: SSE event: init { userMessage, conversationId }
+    UI->>UI: Render user bubble optimistically
+
+    alt Mode == "standard"
+        Server-->>API: SSE event: done { userMessage, aiResponse: null }
+        API-->>UI: Complete turn
+    else Mode == "ai_analysis"
+        Server->>DB: Query 12 multi-turn history messages with timestamps
+        Server->>DB: Query messages_fts & obsidian_notes_fts for keyword matches
+        Server->>DB: Query latest 3 category/global summaries
+        Server->>Provider: analyzeArchiveKnowledge({ userPost, postTimestamp, archiveContext, conversationHistory, ... })
+        loop Token Streaming
+            Provider-->>Server: chunk (token delta)
+            Server-->>API: SSE event: chunk { text: delta }
+            API-->>UI: Append to streamingText (live render)
+        end
+        Server->>DB: Persist Assistant Message (status="completed", timestamp = now)
+        Server-->>API: SSE event: done { aiResponse, status: "completed" }
+    else Mode == "google_search"
+        Server->>Provider: googleSearchAI({ query, model, images, ... })
+        loop Grounded Token Streaming
+            Provider-->>Server: chunk (text + grounding metadata)
+            Server-->>API: SSE event: chunk { text: delta }
+            API-->>UI: Append to streamingText
+        end
+        Server->>DB: Persist Assistant Message with Citation Cards
+        Server-->>API: SSE event: done { aiResponse, status: "completed" }
+    end
+
+    opt User clicks "Stop"
+        User->>UI: Click Stop Generation
+        UI->>API: abortController.abort()
+        API->>Server: Terminate HTTP connection
+        Server->>Provider: AbortSignal triggered
+        Server->>DB: Persist partial output (status="interrupted")
+        Server-->>API: SSE event: done { status: "interrupted" }
+    end
+```
+
+#### Real-Time Temporal Anchoring
+To prevent hallucinated or stale dates in local offline models (e.g., LM Studio templates with hardcoded dates), the server injects explicit temporal context:
+1. **System Prompt**: `CURRENT SYSTEM DATE & TIME: ${nowIso} (${nowDateStr}, ${nowTimeStr})`
+2. **Current Post Header**: `CURRENT USER POST [${nowIso}]:\n"""\n${userPost}\n"""`
+3. **Multi-Turn History**: Each turn includes its timestamp: `${role} [${timestamp}]: ${content}`
+4. **Retrieved Notes**: Notes include their modification time: `[Obsidian Note: "${title}"] (${rel_path}) [Updated: ${noteTime}]`
+
+---
+
+### Process 2: Two-Way Obsidian Vault Synchronization Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User / Auto-Sync
+    participant UI as ObsidianNotesView / SettingsModal
+    participant Server as Express /api/obsidian/sync
+    participant Engine as obsidianSync.js
+    participant Vault as Local Obsidian Vault (<VaultPath>)
+    participant DB as SQLite & FTS5
+
+    User->>UI: Click "Sync Vault Now" (or trigger background sync)
+    UI->>Server: POST /api/obsidian/sync
+    Server->>Engine: sync(vaultPath)
 
     rect rgb(20, 25, 45)
-    Note over User,Provider: Flow A: Live Google Search AI Overviews
-    User->>UI: Click "Google Search AI" in header / composer
-    UI->>Modal: Display search modal dialog
-    User->>Modal: Submits query (e.g. "Comic cons in Australia in 2026")
-    Modal->>Server: POST /api/search/google { query }
-    Server->>Provider: Query Google Search with grounded AI overview
-    Provider-->>Server: Return synthesized answer + sources & hyperlinks
-    Server-->>Modal: Return JSON response
-    Modal->>UI: Insert formatted overview into composer OR post directly as thread message
+    Note over Engine,Vault: Step 1: Import Vault Notes (Vault -> DB)
+    Engine->>Vault: Walk directory tree (ignoring "AI Archive/", ".obsidian", etc.)
+    loop For each .md file
+        Engine->>Engine: Compare disk mtime with DB mtime_ms
+        alt mtime unchanged
+            Engine->>Engine: Skip file read & SHA-256 calculation
+        else mtime changed
+            Engine->>Vault: Read file & calculate SHA-256 hash
+            alt Hash matches
+                Engine->>DB: Update mtime_ms only
+            else Content changed / New file
+                Engine->>DB: Upsert into obsidian_notes (within db.transaction)
+                DB->>DB: Triggers obsidian_fts_au / ai update obsidian_notes_fts
+            end
+        end
+    end
+    Engine->>DB: Delete obsidian_notes rows no longer found on disk
     end
 
     rect rgb(35, 20, 45)
-    Note over User,Provider: Flow B: Interactive Hyperlink Hover Summarization
-    User->>UI: Hovers cursor over external hyperlink in chat bubble
-    UI->>UI: Render tooltip card: "Please provide an AI summary of this page"
-    User->>UI: Clicks tooltip button
-    UI->>Server: POST /api/chat { text: "Please provide an AI summary of this page: <URL>", ... }
-    Server->>Provider: Request URL scrape and structured summary
-    Provider-->>Server: Stream summary tokens
-    Server-->>UI: Real-time token streaming
-    UI->>UI: Append new summary message directly into the active conversation
+    Note over Engine,Vault: Step 2: Export Conversations & Summaries (DB -> Vault)
+    Engine->>DB: Query active conversations & messages
+    Engine->>Vault: Write <Vault>/AI Archive/Conversations/YYYY-MM-DD_Title_id.md
+    Engine->>DB: Query active archive summaries & categories
+    Engine->>Vault: Write <Vault>/AI Archive/Summaries/Category_Name.md & Global_Archive_Digest.md
     end
+
+    Engine->>DB: Update 'obsidian_last_sync' setting
+    Engine-->>Server: Return { success: true, totalVaultNotes, importedCount, updatedCount, deletedCount, exportedCount, durationMs }
+    Server-->>UI: Render updated note badges & toast confirmation
 ```
 
-1. **Google Search AI Modal**:
-   - Allows users to search the live web using Google AI Search directly from within any conversation.
-   - Converts raw citation URLs into interactive markdown hyperlinks.
-   - Provides 1-click insertion into the chat message textarea or immediate posting as a new message bubble.
-2. **Hyperlink Hover Summarizer (`FormattedText.jsx`)**:
-   - Custom URL link renderer detects all web hyperlinks (`http://`, `https://`).
-   - When hovered, displays an actionable pop-up button: *"Please provide an AI summary of this page"*.
-   - Clicking triggers an automated AI summary query appended to the thread.
+---
+
+### Process 3: AI Summarization, Categorization & Deduplication Pipeline
+
+```mermaid
+flowchart TD
+    Start([User triggers 'Generate AI Digest']) --> CheckPrivacy{Settings: 'Use Only Private AI' enabled?}
+    CheckPrivacy -->|Yes| EnforceLocal[Restrict provider to local: Ollama or LM Studio]
+    CheckPrivacy -->|No| AllowAll[Allow configured provider: Gemini, OpenAI, Ollama, LM Studio]
+
+    EnforceLocal --> SelectMode{Mode: Incremental vs Full Re-run}
+    AllowAll --> SelectMode
+
+    SelectMode -->|Incremental| GetCoverage[Fetch coverage_end of latest active summary]
+    GetCoverage --> FetchNew[Query messages WHERE timestamp > coverage_end]
+    SelectMode -->|Full Re-run| FetchAll[Query all messages in archive]
+
+    FetchNew --> BuildArchiveText[Build compact timestamped log representation]
+    FetchAll --> BuildArchiveText
+
+    BuildArchiveText --> ProviderDispatch{Provider}
+    ProviderDispatch -->|Ollama| OllamaFormat[Set format: 'json']
+    ProviderDispatch -->|LM Studio| LMStudioFormat["Set response_format: { type: 'json_schema', ... }"]
+    ProviderDispatch -->|OpenAI| OpenAIFormat["Set response_format: { type: 'json_object' }"]
+    ProviderDispatch -->|Gemini| GeminiFormat[Set responseMimeType: 'application/json']
+
+    OllamaFormat --> ExecuteAI[Execute Model Inference & Stream Tokens]
+    LMStudioFormat --> ExecuteAI
+    OpenAIFormat --> ExecuteAI
+    GeminiFormat --> ExecuteAI
+
+    ExecuteAI --> CleanJSON[Strip reasoning/think tags & extract outer JSON object]
+    CleanJSON --> ParseJSON[Parse JSON: global_summary & categories list]
+
+    ParseJSON --> Deduplicate[Deduplication: Soft-delete older summaries: is_deleted = 1]
+    Deduplicate --> SaveDB[(Insert new archive_summaries rows into SQLite)]
+    SaveDB --> WriteDisk[(Write Markdown digest files to data/summaries/*.md)]
+    WriteDisk --> Complete([Digest generation complete - Dashboard updated])
+```
+
+#### Privacy & Resilience Highlights
+1. **Privacy Mode Enforcement**: If `only_private_ai_summarization` is true, attempts to route to Gemini or OpenAI throw a hard error.
+2. **Deduplication**: Superseded summaries are soft-deleted (`is_deleted = 1`), preventing infinite row growth while preserving audit history.
+3. **LM Studio Schema Handling**: Uses `json_schema` constraint compliant with LM Studio v0.3+, with automatic retry fallback if a model does not support grammar enforcement.
+4. **Reasoning Extraction**: Cleanly strips internal `<think>...</think>` tags emitted by models like Qwen 2.5/3.6 or DeepSeek-R1.
+
+---
+
+### Process 4: Interactive Hyperlink Hover Summarization
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Bubble as Message Bubble / FormattedText
+    participant Tooltip as Pop-up Card
+    participant UI as ChatView
+    participant Server as Express Backend (:3002)
+
+    User->>Bubble: Hovers cursor over external link (e.g. https://example.com/article)
+    Bubble->>Tooltip: Render pop-up: "Please provide an AI summary of this page"
+    User->>Tooltip: Clicks summary button
+    Tooltip->>UI: Submit automated prompt: "Please provide an AI summary of this page: https://example.com/article"
+    UI->>Server: POST /api/conversations/:id/posts?stream=true
+    Server->>Server: Fetch URL content & strip HTML to Markdown
+    Server->>Server: Route to provider with summarization prompt
+    Server-->>UI: Real-time token streaming of webpage analysis
+    UI-->>User: Render completed analysis bubble with citation link
+```
+
+---
+
+### Process 5: JSON Archive Backup & Cross-Instance Restoration
+
+The system provides zero-vendor-lockin data portability through comprehensive JSON export and two-way restoration, allowing complete historical archives to be seamlessly backed up or migrated to new or different instances.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant UI as Client UI (ArchiveView / SettingsModal)
+    participant Modal as RestoreModal
+    participant Server as Express Backend (:3002)
+    participant DB as SQLite (archive.db)
+    participant FTS as messages_fts (FTS5)
+
+    Note over User,DB: Export Flow (Instance A)
+    User->>UI: Clicks "JSON Backup"
+    UI->>Server: GET /api/export/json
+    Server->>DB: Query non-deleted conversations, messages, categories, summaries, attachments
+    Server-->>User: Streams "personal_ai_archive_backup.json"
+
+    Note over User,DB: Restore Flow (Instance B or Fresh Installation)
+    User->>UI: Clicks "Restore Backup"
+    UI->>Modal: Opens RestoreModal dialog
+    User->>Modal: Selects/drops backup.json file
+    Modal->>Server: POST /api/restore/preview (FormData)
+    Server-->>Modal: Returns metadata, counts (conversations, messages, etc.), and sample titles
+    Modal-->>User: Displays verified backup card & strategy options ("Merge" vs "Replace")
+    User->>Modal: Chooses strategy & clicks "Restore Archive"
+    Modal->>Server: POST /api/restore/json (FormData: file + mode)
+    
+    rect rgb(30, 41, 59)
+        Note over Server,FTS: Atomic SQLite Transaction
+        Server->>DB: BEGIN TRANSACTION
+        alt Mode == 'replace'
+            Server->>DB: Wipe existing messages, conversations, summaries, categories
+        end
+        Server->>DB: Upsert categories (with name conflict resolution)
+        Server->>DB: Upsert conversations (retaining model/provider config)
+        Server->>DB: Upsert messages (creating parent placeholders if needed)
+        Server->>DB: Upsert attachments & summaries
+        Server->>FTS: INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')
+        Server->>DB: COMMIT TRANSACTION
+    end
+
+    Server-->>Modal: Returns success response { success: true, mode, counts }
+    Modal-->>UI: Dispatches onRestored callback
+    UI->>Server: Refreshes conversations, summaries, categories, and FTS timeline
+    UI-->>User: Displays success notification & opens restored threads
+```
+
+#### Restoration Strategy Specifications:
+1. **Merge Mode (`mode: 'merge'`) (Default)**:
+   - Safely merges incoming backup conversations, messages, topics, and summaries into the target database.
+   - Primary key conflicts are upserted with updated contents without deleting or altering existing conversations unique to the current instance.
+2. **Replace Mode (`mode: 'replace'`)**:
+   - Cleanses existing conversation threads, messages, attachments, and summaries, creating an exact replica of the source instance backup.
+   - Preserves local application configuration (API credentials, local Ollama/LM Studio endpoints, and Obsidian vault paths) in the `settings` table.
+3. **Foreign Key Self-Healing**:
+   - If an imported message references a conversation ID not present in the backup array, a placeholder conversation row is automatically provisioned to maintain strict relational constraints (`PRAGMA foreign_keys = ON`).
+4. **Instant FTS5 Search Synchronization**:
+   - Executes `INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')` within the post-restore cycle, ensuring all imported content is immediately searchable across sub-millisecond full-text queries.
 
 ---
 
 ## 4. Current Implementation Status & Operational Runbook
 
-### Active Port Architecture & Multi-App Topology
-To run alongside companion applications (such as **Community AI Archive**), the service ports are isolated:
-- **Backend API**: `http://localhost:3002` (configurable via `PORT` in `.env`, default fallback is `3002`).
-- **Frontend Client (Vite Dev)**: `http://localhost:5173` (proxies `/api` and `/summaries-files` to `http://localhost:3002`).
-- **Companion App (CommunityAIArchive)**: Retained on `http://localhost:3001`.
+### Active Port Architecture & Host Isolation
+- **Backend API Server**: `http://127.0.0.1:3002`
+  - Explicitly bound to `127.0.0.1` (localhost only).
+  - CORS whitelist restricted to local browser clients (`http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:3002`, `http://127.0.0.1:3002`).
+- **Frontend Client (Vite Dev)**: `http://localhost:5173`
+  - Proxies `/api`, `/summaries-files`, and `/media` to `http://127.0.0.1:3002`.
 - **Local AI Endpoints**:
   - Ollama: `http://localhost:11434`
-  - LM Studio: `http://localhost:1234` / `http://localhost:1234/v1`
+  - LM Studio: `http://localhost:1234/v1`
 
-### Directory & Storage Structure
+---
+
+### Codebase Directory Structure
+
 ```
 /Users/deangardiner/PersonalAIArchive
 ├── server/
-│   ├── index.js          # Express server, SSE streaming, export handlers, Vite static serving
-│   ├── db.js             # SQLite init, WAL pragma, schema, FTS5 triggers
-│   ├── providers.js      # Multi-model routing (Gemini, OpenAI, Ollama, LM Studio)
-│   ├── summarizer.js     # Background AI summarization & Markdown note generator
-│   └── contextInjector.js# Dynamic context assembly (Summaries, Topics, FTS5)
+│   ├── config.js          # Central configuration, model defaults, settings masking & limits
+│   ├── db.js              # Versioned SQLite migrations (PRAGMA user_version), indexes, FTS5 triggers
+│   ├── index.js           # Express app, 127.0.0.1 binding, restricted CORS, SSE streaming posts
+│   ├── obsidianSync.js    # Two-way Obsidian Vault sync engine, mtime caching, atomic transactions
+│   ├── providers.js       # Multi-model provider router (Gemini, OpenAI, Ollama, LM Studio)
+│   └── summarizer.js      # Background topic categorization, digest generator & deduplication
+│
 ├── client/
-│   ├── src/              # React 19 UI components (ChatView, ArchiveView, SummaryView, etc.)
-│   ├── dist/             # Production build bundle
-│   └── vite.config.js    # Dev server configuration & proxy routes
+│   ├── src/
+│   │   ├── api.js         # Unified client API wrapper & SSE stream reader (streamPost)
+│   │   ├── App.jsx        # Root application state, view routing, active conversation management
+│   │   ├── index.css      # Custom design tokens, dark mode, animations, source citation cards
+│   │   ├── main.jsx       # React 19 entry point
+│   │   └── components/
+│   │       ├── ArchiveView.jsx       # Chronological conversation timeline & FTS search explorer
+│   │       ├── ChatView.jsx          # Triple-action composer, streaming bubbles, media upload
+│   │       ├── FormattedText.jsx     # Markdown renderer with hyperlink hover summarization pop-ups
+│   │       ├── ObsidianNotesView.jsx # Vault explorer, live sync status, note inspector & insert
+│   │       ├── SettingsModal.jsx     # Provider keys, base URLs, debounced vault path validation
+│   │       ├── Sidebar.jsx           # Conversation thread navigation & view switching
+│   │       └── SummaryView.jsx       # Global Executive Digest, category cards & digest trigger
+│   ├── dist/              # Production build bundle served statically by Express in production
+│   └── vite.config.js     # Dev server proxy configuration (/api, /summaries-files, /media)
+│
 └── data/
-    ├── archive.db        # SQLite database (WAL mode enabled)
-    ├── summaries/        # Obsidian-compatible Markdown category notes & global digest
-    └── media/            # Local binary attachment repository
+    ├── archive.db         # SQLite database file (WAL mode, versioned migrations)
+    ├── summaries/         # Local copy of generated Markdown digests (Global_Archive_Digest.md, etc.)
+    └── media/             # Uploaded image attachments repository
 ```
 
+---
+
 ### Operational Commands
-- **Start Backend API Server**:
-  ```bash
-  npm run server
-  ```
-- **Start Frontend Dev Server**:
-  ```bash
-  npm run client
-  ```
-- **Build Frontend for Production**:
-  ```bash
-  npm run build:client
-  ```
+
+```bash
+# Start Backend API Server (Port 3002)
+npm run server
+
+# Start Frontend Dev Server (Port 5173 with Vite HMR)
+npm run client
+
+# Build Frontend for Production (Output to client/dist)
+npm run build:client
+
+# Lint and Validate Client Code
+npx oxlint client/src
+```
+
+---
 
 ### Verified Implementation Checklist
-- [x] Multi-Provider AI Routing (Gemini, OpenAI, Ollama, LM Studio) with live health status indicators.
-- [x] Real-time token streaming with instant `AbortController` cancellation saving partial responses (`status='interrupted'`).
-- [x] Context injection with 3 operational modes (`Latest Summaries`, `Selected Topics` modal, `Smart Keyword FTS`).
-- [x] Automated AI background summarization pipeline (Incremental vs. Full re-run) with dual SQLite and disk Markdown persistence.
-- [x] Live Google AI Search modal with citation hyperlinking and 1-click thread posting.
-- [x] Interactive hyperlink hover tooltip for instantaneous on-demand web page summaries.
-- [x] Full-Text Search Explorer across all conversations using SQLite FTS5.
-- [x] Portable data export via dynamic Obsidian Vault (`.zip`) streaming and complete JSON snapshots.
-- [x] Safe port coexistence with `CommunityAIArchive` on port `3001`.
 
+- [x] **Unified Multi-Mode Posting**: Single composer supporting Standard Posts, Archive AI Analysis, and Google Search AI with live token streaming.
+- [x] **Real-Time Temporal Context**: System prompt and user post headers automatically injected with live ISO timestamps and local calendar dates.
+- [x] **Two-Way Obsidian Vault Sync**: Incremental sync with `mtime` and SHA-256 caching; full-text search across vault notes via `obsidian_notes_fts`.
+- [x] **Multi-Provider AI Routing**: Google Gemini, OpenAI, Ollama, and LM Studio with active health probing and 10-minute model list caching.
+- [x] **Security Hardening**: Express bound to `127.0.0.1`, restricted CORS origins, and masked API keys (`••••<last4>`) in settings responses.
+- [x] **Database Optimization**: Versioned migrations (`PRAGMA user_version = 3`), B-Tree indexes, external-content FTS5 virtual tables, and automatic synchronization triggers.
+- [x] **AI Summarizer & Topic Classifier**: Deduplicated upserts, private AI enforcement, LM Studio `json_schema` support, and dual SQLite/Markdown persistence.
+- [x] **Google Search AI Grounding**: Real-time web search synthesis with interactive source citation cards.
+- [x] **Interactive Hyperlink Hover Summaries**: On-demand web scraping and AI summaries via link hover tooltips.
+- [x] **Data Portability**: Dynamic streaming Obsidian Vault (`.zip`) download and complete JSON database backup.

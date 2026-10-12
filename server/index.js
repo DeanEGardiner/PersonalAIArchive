@@ -35,7 +35,8 @@ app.use(cors({
   }
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // Serve summaries and media directories for direct file viewing
 app.use('/summaries-files', express.static(SUMMARIES_DIR));
@@ -924,10 +925,313 @@ app.get('/api/export/json', (req, res) => {
   const messages = db.prepare('SELECT * FROM messages WHERE is_deleted = 0').all();
   const categories = db.prepare('SELECT * FROM categories WHERE is_deleted = 0').all();
   const summaries = db.prepare('SELECT * FROM archive_summaries WHERE is_deleted = 0').all();
+  const attachments = db.prepare('SELECT * FROM attachments WHERE is_deleted = 0').all();
 
   res.setHeader('Content-Disposition', 'attachment; filename="personal_ai_archive_backup.json"');
   res.setHeader('Content-Type', 'application/json');
-  res.send(JSON.stringify({ conversations, messages, categories, summaries, exported_at: new Date().toISOString() }, null, 2));
+  res.send(JSON.stringify({ 
+    version: '1.0',
+    exported_at: new Date().toISOString(),
+    conversations, 
+    messages, 
+    categories, 
+    summaries,
+    attachments
+  }, null, 2));
+});
+
+// Multer memory storage for JSON backup restoration
+const jsonBackupUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/json' || file.originalname.toLowerCase().endsWith('.json')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only .json backup files are permitted'));
+    }
+  }
+});
+
+function parseBackupPayload(req) {
+  let backupData;
+  if (req.file) {
+    const jsonStr = req.file.buffer.toString('utf-8');
+    backupData = JSON.parse(jsonStr);
+  } else if (req.body && (req.body.conversations || req.body.messages || req.body.data)) {
+    backupData = req.body.data || req.body;
+  } else if (req.body && typeof req.body === 'object') {
+    backupData = req.body;
+  }
+
+  if (!backupData || typeof backupData !== 'object') {
+    throw new Error('Invalid backup file: Payload must be a JSON object');
+  }
+
+  return backupData;
+}
+
+function restoreJsonBackup({ backupData, mode = 'merge' }) {
+  const conversations = Array.isArray(backupData.conversations) ? backupData.conversations : [];
+  const messages = Array.isArray(backupData.messages) ? backupData.messages : [];
+  const categories = Array.isArray(backupData.categories) ? backupData.categories : [];
+  const summaries = Array.isArray(backupData.summaries) ? backupData.summaries : [];
+  const attachments = Array.isArray(backupData.attachments) ? backupData.attachments : [];
+
+  if (conversations.length === 0 && messages.length === 0) {
+    throw new Error('Invalid backup file: No conversations or messages found to restore');
+  }
+
+  const counts = {
+    conversations: 0,
+    messages: 0,
+    categories: 0,
+    summaries: 0,
+    attachments: 0
+  };
+
+  const executeRestore = db.transaction(() => {
+    if (mode === 'replace') {
+      // Clean restore: wipe existing conversations and summaries while preserving settings
+      db.prepare('DELETE FROM attachments').run();
+      db.prepare('DELETE FROM messages').run();
+      db.prepare('DELETE FROM conversations').run();
+      db.prepare('DELETE FROM archive_summaries').run();
+      db.prepare('DELETE FROM categories').run();
+    }
+
+    // 1. Categories
+    const upsertCat = db.prepare(`
+      INSERT INTO categories (id, name, description, created_at, updated_at, device_id, is_deleted)
+      VALUES (@id, @name, @description, @created_at, @updated_at, @device_id, @is_deleted)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        description = excluded.description,
+        updated_at = excluded.updated_at,
+        is_deleted = excluded.is_deleted
+    `);
+    for (const cat of categories) {
+      if (!cat.id || !cat.name) continue;
+      try {
+        upsertCat.run({
+          id: cat.id,
+          name: cat.name,
+          description: cat.description || null,
+          created_at: cat.created_at || new Date().toISOString(),
+          updated_at: cat.updated_at || new Date().toISOString(),
+          device_id: cat.device_id || 'restored_instance',
+          is_deleted: cat.is_deleted ? 1 : 0
+        });
+        counts.categories++;
+      } catch (err) {
+        if (err.message && err.message.includes('UNIQUE constraint failed: categories.name')) {
+          db.prepare('UPDATE categories SET description = COALESCE(@description, description), updated_at = @updated_at WHERE name = @name')
+            .run({
+              name: cat.name,
+              description: cat.description || null,
+              updated_at: cat.updated_at || new Date().toISOString()
+            });
+          counts.categories++;
+        } else {
+          console.warn('[Restore] Skipped category:', cat.id, err.message);
+        }
+      }
+    }
+
+    // 2. Conversations
+    const upsertConv = db.prepare(`
+      INSERT INTO conversations (id, title, created_at, updated_at, device_id, is_deleted, default_provider, default_model)
+      VALUES (@id, @title, @created_at, @updated_at, @device_id, @is_deleted, @default_provider, @default_model)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        updated_at = excluded.updated_at,
+        is_deleted = excluded.is_deleted,
+        default_provider = COALESCE(excluded.default_provider, conversations.default_provider),
+        default_model = COALESCE(excluded.default_model, conversations.default_model)
+    `);
+    const knownConvIds = new Set();
+    for (const conv of conversations) {
+      if (!conv.id) continue;
+      upsertConv.run({
+        id: conv.id,
+        title: conv.title || 'Untitled Conversation',
+        created_at: conv.created_at || new Date().toISOString(),
+        updated_at: conv.updated_at || new Date().toISOString(),
+        device_id: conv.device_id || 'restored_instance',
+        is_deleted: conv.is_deleted ? 1 : 0,
+        default_provider: conv.default_provider || conv.provider || null,
+        default_model: conv.default_model || conv.model || null
+      });
+      knownConvIds.add(conv.id);
+      counts.conversations++;
+    }
+
+    // 3. Messages
+    const ensureConv = db.prepare(`
+      INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at, device_id, is_deleted)
+      VALUES (?, 'Restored Conversation', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'restored_instance', 0)
+    `);
+    const upsertMsg = db.prepare(`
+      INSERT INTO messages (id, conversation_id, role, content, status, timestamp, updated_at, device_id, is_deleted, provider, model, metadata_json, post_type)
+      VALUES (@id, @conversation_id, @role, @content, @status, @timestamp, @updated_at, @device_id, @is_deleted, @provider, @model, @metadata_json, @post_type)
+      ON CONFLICT(id) DO UPDATE SET
+        content = excluded.content,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        is_deleted = excluded.is_deleted,
+        provider = excluded.provider,
+        model = excluded.model,
+        metadata_json = excluded.metadata_json,
+        post_type = excluded.post_type
+    `);
+    for (const msg of messages) {
+      if (!msg.id || !msg.conversation_id) continue;
+      if (!knownConvIds.has(msg.conversation_id)) {
+        ensureConv.run(msg.conversation_id);
+        knownConvIds.add(msg.conversation_id);
+      }
+      upsertMsg.run({
+        id: msg.id,
+        conversation_id: msg.conversation_id,
+        role: msg.role || 'user',
+        content: msg.content || '',
+        status: msg.status || 'completed',
+        timestamp: msg.timestamp || new Date().toISOString(),
+        updated_at: msg.updated_at || new Date().toISOString(),
+        device_id: msg.device_id || 'restored_instance',
+        is_deleted: msg.is_deleted ? 1 : 0,
+        provider: msg.provider || null,
+        model: msg.model || null,
+        metadata_json: typeof msg.metadata_json === 'object' ? JSON.stringify(msg.metadata_json) : (msg.metadata_json || null),
+        post_type: msg.post_type || 'user'
+      });
+      counts.messages++;
+    }
+
+    // 4. Attachments (if present)
+    const upsertAtt = db.prepare(`
+      INSERT INTO attachments (id, message_id, file_name, file_path, mime_type, file_size, checksum, created_at, updated_at, is_deleted)
+      VALUES (@id, @message_id, @file_name, @file_path, @mime_type, @file_size, @checksum, @created_at, @updated_at, @is_deleted)
+      ON CONFLICT(id) DO UPDATE SET
+        file_name = excluded.file_name,
+        file_path = excluded.file_path,
+        is_deleted = excluded.is_deleted
+    `);
+    for (const att of attachments) {
+      if (!att.id || !att.message_id) continue;
+      try {
+        upsertAtt.run({
+          id: att.id,
+          message_id: att.message_id,
+          file_name: att.file_name || 'attachment',
+          file_path: att.file_path || '',
+          mime_type: att.mime_type || 'image/jpeg',
+          file_size: att.file_size || 0,
+          checksum: att.checksum || '',
+          created_at: att.created_at || new Date().toISOString(),
+          updated_at: att.updated_at || new Date().toISOString(),
+          is_deleted: att.is_deleted ? 1 : 0
+        });
+        counts.attachments++;
+      } catch (err) {
+        console.warn('[Restore] Skipped attachment:', att.id, err.message);
+      }
+    }
+
+    // 5. Summaries
+    const ensureCat = db.prepare(`
+      INSERT OR IGNORE INTO categories (id, name, created_at, updated_at, device_id, is_deleted)
+      VALUES (?, 'Restored Topic', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'restored_instance', 0)
+    `);
+    const upsertSummary = db.prepare(`
+      INSERT INTO archive_summaries (id, category_id, summary_text, coverage_start, coverage_end, created_at, updated_at, device_id, is_deleted, summary_type)
+      VALUES (@id, @category_id, @summary_text, @coverage_start, @coverage_end, @created_at, @updated_at, @device_id, @is_deleted, @summary_type)
+      ON CONFLICT(id) DO UPDATE SET
+        summary_text = excluded.summary_text,
+        updated_at = excluded.updated_at,
+        is_deleted = excluded.is_deleted
+    `);
+    for (const sum of summaries) {
+      if (!sum.id) continue;
+      if (sum.category_id) {
+        ensureCat.run(sum.category_id);
+      }
+      try {
+        upsertSummary.run({
+          id: sum.id,
+          category_id: sum.category_id || null,
+          summary_text: sum.summary_text || '',
+          coverage_start: sum.coverage_start || null,
+          coverage_end: sum.coverage_end || null,
+          created_at: sum.created_at || new Date().toISOString(),
+          updated_at: sum.updated_at || new Date().toISOString(),
+          device_id: sum.device_id || 'restored_instance',
+          is_deleted: sum.is_deleted ? 1 : 0,
+          summary_type: sum.summary_type || (sum.category_id ? 'category' : 'global')
+        });
+        counts.summaries++;
+      } catch (err) {
+        console.warn('[Restore] Skipped summary:', sum.id, err.message);
+      }
+    }
+
+    // 6. Rebuild FTS5 virtual table
+    db.prepare("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')").run();
+  });
+
+  executeRestore();
+
+  return {
+    success: true,
+    mode,
+    counts,
+    message: `Successfully restored ${counts.conversations} conversations, ${counts.messages} messages, and ${counts.categories} topics.`
+  };
+}
+
+// Endpoint to preview backup contents without modifying database
+app.post('/api/restore/preview', jsonBackupUpload.single('file'), (req, res) => {
+  try {
+    const backupData = parseBackupPayload(req);
+    const conversations = Array.isArray(backupData.conversations) ? backupData.conversations : [];
+    const messages = Array.isArray(backupData.messages) ? backupData.messages : [];
+    const categories = Array.isArray(backupData.categories) ? backupData.categories : [];
+    const summaries = Array.isArray(backupData.summaries) ? backupData.summaries : [];
+    const attachments = Array.isArray(backupData.attachments) ? backupData.attachments : [];
+
+    res.json({
+      valid: conversations.length > 0 || messages.length > 0,
+      version: backupData.version || '1.0',
+      exported_at: backupData.exported_at || null,
+      counts: {
+        conversations: conversations.length,
+        messages: messages.length,
+        categories: categories.length,
+        summaries: summaries.length,
+        attachments: attachments.length
+      },
+      previewConversations: conversations.slice(0, 5).map(c => ({
+        id: c.id,
+        title: c.title || 'Untitled Conversation',
+        updated_at: c.updated_at
+      }))
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to inspect backup file' });
+  }
+});
+
+// Endpoint to restore backup into database
+app.post('/api/restore/json', jsonBackupUpload.single('file'), (req, res) => {
+  try {
+    const backupData = parseBackupPayload(req);
+    const mode = (req.body && req.body.mode === 'replace') ? 'replace' : 'merge';
+    const result = restoreJsonBackup({ backupData, mode });
+    res.json(result);
+  } catch (err) {
+    console.error('[Restore Backup Error]:', err);
+    res.status(400).json({ error: err.message || 'Failed to restore backup' });
+  }
 });
 
 // -------------------------------------------------------------
