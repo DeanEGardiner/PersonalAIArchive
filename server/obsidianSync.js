@@ -4,6 +4,22 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('./db');
 const config = require('./config');
+const embeddingService = require('./embeddingService');
+
+const STOP_WORDS = new Set([
+  'the', 'and', 'or', 'to', 'in', 'a', 'an', 'is', 'it', 'you', 'that', 'he',
+  'was', 'for', 'on', 'are', 'as', 'with', 'his', 'they', 'i', 'at', 'be',
+  'this', 'have', 'from', 'or', 'one', 'had', 'by', 'word', 'but', 'not',
+  'what', 'all', 'were', 'we', 'when', 'your', 'can', 'said', 'there', 'use',
+  'an', 'each', 'which', 'she', 'do', 'how', 'their', 'if', 'will', 'up',
+  'other', 'about', 'out', 'many', 'then', 'them', 'these', 'so', 'some', 'her',
+  'would', 'make', 'like', 'him', 'into', 'time', 'has', 'look', 'two', 'more',
+  'write', 'go', 'see', 'number', 'no', 'way', 'could', 'people', 'my', 'than',
+  'first', 'water', 'been', 'call', 'who', 'oil', 'its', 'now', 'find', 'long',
+  'down', 'day', 'did', 'get', 'come', 'made', 'may', 'part', 'please', 'check',
+  'search', 'query', 'show', 'give', 'details', 'information', 'tell', 'me',
+  'note', 'notes', 'vault', 'file', 'files'
+]);
 
 class ObsidianSyncService {
   getVaultPath() {
@@ -147,9 +163,11 @@ class ObsidianSyncService {
             const id = uuidv4();
             insertNoteStmt.run(id, note.fileName, note.relPath, title, content, checksum, mtimeMs, now, now);
             importedCount++;
+            embeddingService.queueObsidianNote(id, `${title}\n\n${content}`.slice(0, 4000));
           } else {
             updateNoteStmt.run(title, content, checksum, mtimeMs, now, existing.id);
             updatedCount++;
+            embeddingService.queueObsidianNote(existing.id, `${title}\n\n${content}`.slice(0, 4000));
           }
         } catch (err) {
           console.warn(`[ObsidianSync] Failed to process note ${note.relPath}:`, err.message);
@@ -305,31 +323,50 @@ ${s.summary_text}
     }
 
     const cleanQuery = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
-    const words = cleanQuery.split(/\s+/).filter(w => w.length > 1);
+    const rawWords = cleanQuery.split(/\s+/).filter(w => w.length > 1);
+    const keywords = rawWords.filter(w => !STOP_WORDS.has(w));
+    const searchTerms = keywords.length > 0 ? keywords : rawWords;
 
-    if (words.length === 0) {
+    if (searchTerms.length === 0) {
       return [];
     }
 
+    let ftsHits = [];
     try {
-      const ftsExpr = words.map(w => `${w}*`).join(' OR ');
-      return db.prepare(`
+      // 1. Try AND match on meaningful terms first
+      const andExpr = searchTerms.map(w => `${w}*`).join(' AND ');
+      ftsHits = db.prepare(`
         SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.updated_at
         FROM obsidian_notes_fts fts
         JOIN obsidian_notes n ON fts.rowid = n.rowid
         WHERE obsidian_notes_fts MATCH ?
         ORDER BY rank
         LIMIT ?
-      `).all(ftsExpr, limit);
+      `).all(andExpr, limit);
+
+      // 2. If no hits and multiple terms, fallback to OR on meaningful terms
+      if (ftsHits.length === 0 && searchTerms.length > 1) {
+        const orExpr = searchTerms.map(w => `${w}*`).join(' OR ');
+        ftsHits = db.prepare(`
+          SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.updated_at
+          FROM obsidian_notes_fts fts
+          JOIN obsidian_notes n ON fts.rowid = n.rowid
+          WHERE obsidian_notes_fts MATCH ?
+          ORDER BY rank
+          LIMIT ?
+        `).all(orExpr, limit);
+      }
     } catch (_) {
-      return db.prepare(`
+      ftsHits = db.prepare(`
         SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, updated_at
         FROM obsidian_notes
         WHERE title LIKE ? OR content LIKE ?
         ORDER BY mtime_ms DESC
         LIMIT ?
-      `).all(`%${query}%`, `%${query}%`, limit);
+      `).all(`%${cleanQuery}%`, `%${cleanQuery}%`, limit);
     }
+
+    return ftsHits;
   }
 
   getNoteById(id) {

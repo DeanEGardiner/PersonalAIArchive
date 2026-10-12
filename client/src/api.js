@@ -263,5 +263,18 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(formDataOrData)
     });
+  },
+
+  // Local Hybrid Search & Embeddings
+  getEmbeddingStatus() {
+    return request('/api/embeddings/status');
+  },
+
+  triggerEmbeddingBackfill(batchSize = 100) {
+    return request('/api/embeddings/backfill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchSize })
+    });
   }
 };

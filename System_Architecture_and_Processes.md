@@ -515,6 +515,16 @@ sequenceDiagram
 │   ├── dist/              # Production build bundle served statically by Express in production
 │   └── vite.config.js     # Dev server proxy configuration (/api, /summaries-files, /media)
 │
+├── electron/
+│   ├── main.js            # Electron main process (lifecycle, window management, embedded Express)
+│   └── preload.js         # Context bridge exposing desktop platform metadata
+│
+├── build/
+│   ├── icon.png           # 1024x1024 application icon asset
+│   └── icon.icns          # Multi-resolution native Apple icon format for dock & finder
+│
+├── dist-electron/         # Standalone desktop packaging output (DMG and .app bundles)
+│
 └── data/
     ├── archive.db         # SQLite database file (WAL mode, versioned migrations)
     ├── summaries/         # Local copy of generated Markdown digests (Global_Archive_Digest.md, etc.)
@@ -535,6 +545,18 @@ npm run client
 # Build Frontend for Production (Output to client/dist)
 npm run build:client
 
+# Run Standalone Desktop App in Local Electron Shell
+npm run electron
+
+# Package Native macOS Apple Silicon DMG (Outputs to dist-electron/)
+npm run pack:mac
+
+# Package Native macOS Intel DMG (Outputs to dist-electron/)
+npm run pack:mac:intel
+
+# Rebuild Native C++ Node Addons (better-sqlite3) for Electron
+npm run rebuild:native
+
 # Lint and Validate Client Code
 npx oxlint client/src
 ```
@@ -543,6 +565,8 @@ npx oxlint client/src
 
 ### Verified Implementation Checklist
 
+- [x] **Standalone macOS Desktop Application**: Native Apple Silicon (`arm64`) and Intel (`x64`) `.dmg` installers and `.app` bundles via Electron & electron-builder with embedded Express server and automatically rebuilt `better-sqlite3` native binaries.
+- [x] **Zero-Terminal Installation**: Standard drag-to-Applications installer with automated routing to `~/Library/Application Support/Personal AI Archive/data/`.
 - [x] **Unified Multi-Mode Posting**: Single composer supporting Standard Posts, Archive AI Analysis, and Google Search AI with live token streaming.
 - [x] **Real-Time Temporal Context**: System prompt and user post headers automatically injected with live ISO timestamps and local calendar dates.
 - [x] **Two-Way Obsidian Vault Sync**: Incremental sync with `mtime` and SHA-256 caching; full-text search across vault notes via `obsidian_notes_fts`.
@@ -552,4 +576,4 @@ npx oxlint client/src
 - [x] **AI Summarizer & Topic Classifier**: Deduplicated upserts, private AI enforcement, LM Studio `json_schema` support, and dual SQLite/Markdown persistence.
 - [x] **Google Search AI Grounding**: Real-time web search synthesis with interactive source citation cards.
 - [x] **Interactive Hyperlink Hover Summaries**: On-demand web scraping and AI summaries via link hover tooltips.
-- [x] **Data Portability**: Dynamic streaming Obsidian Vault (`.zip`) download and complete JSON database backup.
+- [x] **Data Portability**: Dynamic streaming Obsidian Vault (`.zip`) download, complete JSON database backup, and cross-instance restoration modal with safe merge or clean replace strategies.

@@ -4,6 +4,7 @@ client/node_modules/
 
 # Production build
 client/dist/
+dist-electron/
 
 # Local databases and active session data
 *.sqlite

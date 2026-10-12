@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { db, SUMMARIES_DIR } = require('./db');
 const providerRouter = require('./providers');
 const config = require('./config');
+const embeddingService = require('./embeddingService');
 
 class SummarizerService {
   getSummarizerConfig() {
@@ -180,6 +181,8 @@ ${conversationArchiveText}`;
     const now = new Date().toISOString();
     const filesToWrite = [];
 
+    const summariesToEmbed = [];
+
     db.transaction(() => {
       // 1. Global summary
       if (resultData.global_summary) {
@@ -191,6 +194,8 @@ ${conversationArchiveText}`;
           INSERT INTO archive_summaries (id, summary_text, coverage_start, coverage_end, summary_type, created_at, updated_at)
           VALUES (?, ?, ?, ?, 'global', ?, ?)
         `).run(globalSummaryId, resultData.global_summary, coverageStart, coverageEnd, now, now);
+
+        summariesToEmbed.push({ id: globalSummaryId, text: resultData.global_summary });
 
         filesToWrite.push({
           path: path.join(SUMMARIES_DIR, 'Global_Archive_Digest.md'),
@@ -231,6 +236,8 @@ ${resultData.global_summary}
           VALUES (?, ?, ?, ?, ?, 'category', ?, ?)
         `).run(summaryId, categoryId, cat.summary_text, coverageStart, coverageEnd, now, now);
 
+        summariesToEmbed.push({ id: summaryId, text: cat.summary_text });
+
         const safeFilename = cat.name.replace(/[^a-zA-Z0-9_-]/g, '_') + '.md';
         const recsMarkdown = (cat.key_recommendations || []).map(r => `- ${r}`).join('\n');
 
@@ -255,6 +262,11 @@ ${recsMarkdown ? `## Key Recommendations\n${recsMarkdown}\n` : ''}
         });
       }
     })();
+
+    // Queue summaries for background embedding
+    for (const item of summariesToEmbed) {
+      embeddingService.queueSummary(item.id, item.text);
+    }
 
     // Write markdown files on disk after DB transaction commits
     for (const f of filesToWrite) {

@@ -184,5 +184,9 @@ function combineSearchResults(ftsHits, vectorHits, limit = 5) {
 
 ---
 
-## 7. Current Action Item
-**No immediate code changes are necessary today.** The current SQLite FTS5 engine with stopword filtering and 180-second timeout provides fast, reliable, and strictly private local archive synthesis. Keep this document as the reference blueprint when archive scale demands semantic retrieval.
+## 7. Implementation Status
+**Completed & Active (October 2026).**
+- **Migration #4**: Deployed `message_embeddings`, `summary_embeddings`, and `archive_summaries_fts` in [`server/db.js`](file:///Users/deangardiner/PersonalAIArchive/server/db.js).
+- **Asynchronous Embedding Service**: Implemented in [`server/embeddingService.js`](file:///Users/deangardiner/PersonalAIArchive/server/embeddingService.js) supporting LM Studio (`/v1/embeddings`) and Ollama, non-blocking background queue, and vector dot-product similarity.
+- **Hierarchical Hybrid Search & Token Budget Allocator**: Implemented in [`server/hybridSearch.js`](file:///Users/deangardiner/PersonalAIArchive/server/hybridSearch.js) with Tier-1 digest pre-search, Tier-2 message retrieval, centered snippet windowing, Reciprocal Rank Fusion (RRF), and strict $O(1)$ token ceiling (~2,000 tokens).
+- **UI Integration**: Added vector embedding status monitoring and one-click backfill indexing in [`client/src/components/SettingsModal.jsx`](file:///Users/deangardiner/PersonalAIArchive/client/src/components/SettingsModal.jsx).

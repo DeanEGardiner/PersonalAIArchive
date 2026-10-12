@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Key, Server, Check, FolderSync, Database, Download, Upload } from 'lucide-react';
+import { X, Key, Server, Check, FolderSync, Database, Download, Upload, Cpu, Sparkles } from 'lucide-react';
 import { api } from '../api';
 import RestoreModal from './RestoreModal';
 
@@ -10,6 +10,8 @@ export default function SettingsModal({ isOpen, onClose, onSaved, onRestoreCompl
   const [lmStudioUrl, setLmStudioUrl] = useState('http://localhost:1234/v1');
   const [obsidianVaultPath, setObsidianVaultPath] = useState('/Users/deangardiner/Documents/DeanGVault');
   const [obsidianStatus, setObsidianStatus] = useState(null);
+  const [embeddingStatus, setEmbeddingStatus] = useState(null);
+  const [isIndexing, setIsIndexing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isRestoreOpen, setIsRestoreOpen] = useState(false);
@@ -33,6 +35,11 @@ export default function SettingsModal({ isOpen, onClose, onSaved, onRestoreCompl
       if (obsStatus) {
         setObsidianStatus(obsStatus);
         if (obsStatus.vaultPath) setObsidianVaultPath(obsStatus.vaultPath);
+      }
+
+      const embStatus = await api.getEmbeddingStatus().catch(() => null);
+      if (embStatus) {
+        setEmbeddingStatus(embStatus);
       }
     } catch (e) {
       console.error('Failed to load settings:', e);
@@ -76,6 +83,18 @@ export default function SettingsModal({ isOpen, onClose, onSaved, onRestoreCompl
       alert('Failed to save settings: ' + err.message);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleBackfillEmbeddings = async () => {
+    setIsIndexing(true);
+    try {
+      const res = await api.triggerEmbeddingBackfill();
+      if (res?.status) setEmbeddingStatus(res.status);
+    } catch (err) {
+      alert('Failed to trigger embedding indexing: ' + err.message);
+    } finally {
+      setIsIndexing(false);
     }
   };
 
@@ -183,6 +202,42 @@ export default function SettingsModal({ isOpen, onClose, onSaved, onRestoreCompl
             />
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
               Absolute path to your local Obsidian vault. Sync will create an <code>AI Archive</code> folder inside this vault.
+            </span>
+          </div>
+
+          {/* Local Hybrid Search & Vector Embeddings */}
+          <div className="form-group" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+            <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Cpu size={15} color="var(--accent-primary)" />
+                <span>Local Hybrid Search &amp; Vector Embeddings</span>
+              </div>
+              {embeddingStatus && (
+                <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: 'var(--bg-card)', color: 'var(--accent-primary)', border: '1px solid var(--border-subtle)' }}>
+                  {embeddingStatus.config?.model}
+                </span>
+              )}
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', marginTop: '6px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <div>Indexed Messages: <strong>{embeddingStatus?.embeddedMessages ?? 0} / {embeddingStatus?.totalMessages ?? 0}</strong></div>
+                <div>Indexed Digests: <strong>{embeddingStatus?.embeddedSummaries ?? 0} / {embeddingStatus?.totalSummaries ?? 0}</strong></div>
+                <div>Indexed Obsidian Notes: <strong>{embeddingStatus?.embeddedObsidianNotes ?? 0} / {embeddingStatus?.totalObsidianNotes ?? 0}</strong></div>
+              </div>
+              <button
+                type="button"
+                onClick={handleBackfillEmbeddings}
+                disabled={isIndexing}
+                className="btn-secondary"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', padding: '7px 12px', cursor: 'pointer' }}
+                title="Generate vector embeddings for all past conversations and summaries using your local model"
+              >
+                <Sparkles size={13} color="var(--accent-primary)" />
+                <span>{isIndexing ? 'Indexing...' : 'Index Archive Embeddings'}</span>
+              </button>
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              Enables dense semantic search + FTS5 keyword matching via Reciprocal Rank Fusion (RRF). 100% private and local.
             </span>
           </div>
 

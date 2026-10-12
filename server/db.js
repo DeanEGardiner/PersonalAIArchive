@@ -2,7 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'archive.db');
 const SUMMARIES_DIR = path.join(DATA_DIR, 'summaries');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
@@ -193,6 +193,59 @@ const migrations = [
         ) WHERE rn = 1
       );
     `);
+  },
+
+  // 4. Hybrid search & Digest embeddings schema
+  () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS message_embeddings (
+        message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        embedding BLOB NOT NULL,
+        model TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_msg_embeddings_msg ON message_embeddings(message_id);
+
+      CREATE TABLE IF NOT EXISTS summary_embeddings (
+        summary_id TEXT PRIMARY KEY REFERENCES archive_summaries(id) ON DELETE CASCADE,
+        embedding BLOB NOT NULL,
+        model TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      DROP TABLE IF EXISTS archive_summaries_fts;
+      CREATE VIRTUAL TABLE archive_summaries_fts USING fts5(
+        summary_text,
+        content='archive_summaries',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS summaries_fts_ai AFTER INSERT ON archive_summaries BEGIN
+        INSERT INTO archive_summaries_fts(rowid, summary_text) VALUES (new.rowid, new.summary_text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS summaries_fts_ad AFTER DELETE ON archive_summaries BEGIN
+        INSERT INTO archive_summaries_fts(archive_summaries_fts, rowid, summary_text) VALUES ('delete', old.rowid, old.summary_text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS summaries_fts_au AFTER UPDATE OF summary_text ON archive_summaries BEGIN
+        INSERT INTO archive_summaries_fts(archive_summaries_fts, rowid, summary_text) VALUES ('delete', old.rowid, old.summary_text);
+        INSERT INTO archive_summaries_fts(rowid, summary_text) VALUES (new.rowid, new.summary_text);
+      END;
+
+      INSERT INTO archive_summaries_fts(archive_summaries_fts) VALUES ('rebuild');
+    `);
+  },
+
+  // 5. Obsidian note embeddings schema
+  () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS obsidian_note_embeddings (
+        note_id TEXT PRIMARY KEY REFERENCES obsidian_notes(id) ON DELETE CASCADE,
+        embedding BLOB NOT NULL,
+        model TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_obsidian_embeddings_note ON obsidian_note_embeddings(note_id);
+    `);
   }
 ];
 
@@ -216,7 +269,10 @@ for (const [k, v] of [
   ['summarizer_model', 'gemma4:12b-mlx'],
   ['summarizer_provider', 'ollama'],
   ['obsidian_vault_path', process.env.OBSIDIAN_VAULT_PATH || ''],
-  ['obsidian_last_sync', '']
+  ['obsidian_last_sync', ''],
+  ['embedding_enabled', 'true'],
+  ['embedding_provider', 'lmstudio'],
+  ['embedding_model', 'text-embedding-nomic-embed-text-v1.5']
 ]) {
   insertDefault.run(k, v);
 }

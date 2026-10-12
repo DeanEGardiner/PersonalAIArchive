@@ -12,6 +12,8 @@ const config = require('./config');
 const providerRouter = require('./providers');
 const summarizer = require('./summarizer');
 const obsidianSync = require('./obsidianSync');
+const embeddingService = require('./embeddingService');
+const hybridSearch = require('./hybridSearch');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -22,12 +24,14 @@ const allowedOrigins = new Set([
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:3002',
-  'http://127.0.0.1:3002'
+  'http://127.0.0.1:3002',
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`
 ]);
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.has(origin)) {
+    if (!origin || allowedOrigins.has(origin) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       callback(null, true);
     } else {
       callback(new Error('CORS blocked: Personal AI Archive only allows local requests'));
@@ -245,6 +249,9 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
     VALUES (?, ?, 'user', 'user', ?, 'completed', ?, ?, ?, ?)
   `).run(userMsgId, convId, cleanContent, targetProvider, targetModel, now, now);
 
+  // Queue user message for background embedding
+  embeddingService.queueMessage(userMsgId, cleanContent);
+
   // Attach media if provided
   let userAttachment = null;
   if (attachment && attachment.file_path) {
@@ -313,89 +320,15 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
 
   let archiveContext = '';
   if (mode === 'ai_analysis') {
-    const stopWords = new Set([
-      'can', 'you', 'scan', 'the', 'local', 'archive', 'and', 'tell', 'me', 'if', 
-      'there', 'is', 'are', 'was', 'were', 'record', 'records', 'of', 'when', 'what', 
-      'where', 'how', 'who', 'why', 'which', 'located', 'in', 'at', 'on', 'to', 'for', 
-      'about', 'with', 'from', 'a', 'an', 'please', 'check', 'find', 'search', 'query', 
-      'show', 'give', 'any', 'information', 'details', 'do', 'does', 'did', 'have', 'has'
-    ]);
-    const words = cleanContent.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
-
-    let searchHits = [];
     try {
-      if (words.length > 0) {
-        // Query external-content FTS5 (joined on rowid)
-        const andFts = words.map(w => `${w}*`).join(' AND ');
-        searchHits = db.prepare(`
-          SELECT m.content, m.role, m.timestamp, c.title as conversation_title
-          FROM messages_fts fts
-          JOIN messages m ON fts.rowid = m.rowid
-          JOIN conversations c ON m.conversation_id = c.id
-          WHERE messages_fts MATCH ? AND m.id != ? AND m.is_deleted = 0
-          ORDER BY m.timestamp DESC
-          LIMIT 5
-        `).all(andFts, userMsgId);
-
-        if (searchHits.length === 0 && words.length > 1) {
-          const orFts = words.map(w => `${w}*`).join(' OR ');
-          searchHits = db.prepare(`
-            SELECT m.content, m.role, m.timestamp, c.title as conversation_title
-            FROM messages_fts fts
-            JOIN messages m ON fts.rowid = m.rowid
-            JOIN conversations c ON m.conversation_id = c.id
-            WHERE messages_fts MATCH ? AND m.id != ? AND m.is_deleted = 0
-            ORDER BY m.timestamp DESC
-            LIMIT 5
-          `).all(orFts, userMsgId);
-        }
-      }
-    } catch (ftsErr) {
-      console.warn('[FTS Archive Search Warning]:', ftsErr.message);
+      const searchRes = await hybridSearch.assembleContext(cleanContent, {
+        excludeMessageId: userMsgId,
+        maxTotalChars: 7500
+      });
+      archiveContext = searchRes.contextText;
+    } catch (err) {
+      console.warn('[Hybrid Context Assembly Error]:', err.message);
     }
-
-    const summaries = db.prepare(`
-      SELECT s.summary_text, c.name as category_name
-      FROM archive_summaries s
-      LEFT JOIN categories c ON s.category_id = c.id
-      WHERE s.is_deleted = 0
-      ORDER BY s.updated_at DESC
-      LIMIT 3
-    `).all();
-
-    let contextParts = [];
-    if (searchHits.length > 0) {
-      contextParts.push(`### Relevant Past Archive Conversations:\n` + searchHits.map(h => {
-        const snippet = h.content.length > 1000 ? h.content.slice(0, 1000) + '... [truncated]' : h.content;
-        const ts = h.timestamp ? ` [${h.timestamp}]` : '';
-        return `[Conversation: "${h.conversation_title}"] (${h.role})${ts}: ${snippet}`;
-      }).join('\n\n'));
-    }
-
-    let obsidianHits = [];
-    try {
-      if (words.length > 0) {
-        obsidianHits = obsidianSync.searchNotes(words.join(' '), 3);
-      }
-    } catch (_) {}
-
-    if (obsidianHits.length > 0) {
-      contextParts.push(`### Relevant Obsidian Vault Notes:\n` + obsidianHits.map(n => {
-        const fullNote = obsidianSync.getNoteById(n.id);
-        const rawContent = fullNote?.content || n.preview || '';
-        const snippet = rawContent.length > 1000 ? rawContent.slice(0, 1000) + '... [truncated]' : rawContent;
-        const noteTime = n.updated_at || (n.mtime_ms ? new Date(n.mtime_ms).toISOString() : '');
-        return `[Obsidian Note: "${n.title}"] (${n.rel_path})${noteTime ? ` [Updated: ${noteTime}]` : ''}:\n${snippet}`;
-      }).join('\n\n'));
-    }
-
-    if (summaries.length > 0) {
-      contextParts.push(`### Archive Summaries:\n` + summaries.map(s => {
-        const sSnippet = s.summary_text.length > 600 ? s.summary_text.slice(0, 600) + '... [truncated]' : s.summary_text;
-        return `[${s.category_name || 'Global Digest'}]: ${sSnippet}`;
-      }).join('\n\n'));
-    }
-    archiveContext = contextParts.join('\n\n');
   }
 
   // -------------------------------------------------------------
@@ -456,6 +389,8 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
         INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
         VALUES (?, ?, 'assistant', ?, ?, 'completed', ?, ?, ?, ?)
       `).run(aiMsgId, convId, mode, aiText, actualProvider, actualModel, aiTime, aiTime);
+
+      embeddingService.queueMessage(aiMsgId, aiText);
 
       const aiResponse = {
         id: aiMsgId,
@@ -537,6 +472,8 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
       INSERT INTO messages (id, conversation_id, role, post_type, content, status, provider, model, timestamp, updated_at)
       VALUES (?, ?, 'assistant', ?, ?, 'completed', ?, ?, ?, ?)
     `).run(aiMsgId, convId, mode, aiText, actualProvider, actualModel, aiTime, aiTime);
+
+    embeddingService.queueMessage(aiMsgId, aiText);
 
     const aiResponse = {
       id: aiMsgId,
@@ -656,26 +593,62 @@ app.post('/api/summarize-url', async (req, res) => {
 // -------------------------------------------------------------
 // Archive Explorer & Search Endpoints (FTS5 on rowid)
 // -------------------------------------------------------------
-app.get('/api/archive/search', (req, res) => {
-  const { q } = req.query;
+app.get('/api/archive/search', async (req, res) => {
+  const { q, type = 'all' } = req.query;
   if (!q || !q.trim()) {
     return res.json([]);
   }
 
-  const cleanQuery = q.replace(/[^a-zA-Z0-9\s]/g, ' ').trim();
   try {
-    const results = db.prepare(`
-      SELECT m.*, c.title as conversation_title
-      FROM messages_fts fts
-      JOIN messages m ON fts.rowid = m.rowid
-      JOIN conversations c ON m.conversation_id = c.id
-      WHERE messages_fts MATCH ? AND m.is_deleted = 0
-      ORDER BY m.timestamp DESC
-      LIMIT 50
-    `).all(cleanQuery + '*');
-    res.json(results);
+    let queryVector = null;
+    try {
+      queryVector = await embeddingService.getVector(q);
+    } catch (_) {}
+
+    const [messages, obsidianNotes] = await Promise.all([
+      (type === 'all' || type === 'messages') 
+        ? hybridSearch.searchMessages(q, queryVector, { limit: 30 }) 
+        : Promise.resolve([]),
+      (type === 'all' || type === 'obsidian')
+        ? hybridSearch.searchObsidianNotes(q, queryVector, 20)
+        : Promise.resolve([])
+    ]);
+
+    const formattedMessages = messages.map(m => ({
+      ...m,
+      result_type: 'message'
+    }));
+
+    const formattedNotes = obsidianNotes.map(n => ({
+      ...n,
+      result_type: 'obsidian_note',
+      conversation_id: null,
+      conversation_title: n.title,
+      role: 'note',
+      timestamp: n.updated_at || (n.mtime_ms ? new Date(n.mtime_ms).toISOString() : new Date().toISOString())
+    }));
+
+    // Combine results: matching notes + messages
+    const combined = [...formattedNotes, ...formattedMessages];
+    res.json(combined);
   } catch (err) {
     res.status(400).json({ error: 'Search failed: ' + err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Embeddings Management Endpoints
+// -------------------------------------------------------------
+app.get('/api/embeddings/status', (req, res) => {
+  res.json(embeddingService.getStatus());
+});
+
+app.post('/api/embeddings/backfill', async (req, res) => {
+  try {
+    const result = await embeddingService.backfillBatch(req.body?.batchSize || 100);
+    res.json({ success: true, ...result, status: embeddingService.getStatus() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1268,10 +1241,18 @@ app.post('/api/obsidian/sync', async (req, res) => {
   }
 });
 
-app.get('/api/obsidian/notes', (req, res) => {
+app.get('/api/obsidian/notes', async (req, res) => {
   try {
     const { q = '', limit = 100 } = req.query;
-    const notes = obsidianSync.searchNotes(q, parseInt(limit, 10) || 100);
+    if (q && q.trim()) {
+      let queryVector = null;
+      try {
+        queryVector = await embeddingService.getVector(q);
+      } catch (_) {}
+      const notes = await hybridSearch.searchObsidianNotes(q, queryVector, parseInt(limit, 10) || 100);
+      return res.json(notes);
+    }
+    const notes = obsidianSync.searchNotes('', parseInt(limit, 10) || 100);
     res.json(notes);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1315,3 +1296,5 @@ server.on('error', (err) => {
     console.error(`[Server Error]`, err);
   }
 });
+
+module.exports = { app, server };

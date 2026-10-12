@@ -135,7 +135,7 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
         <input 
           type="text"
           className="archive-search-input"
-          placeholder="Search through all your past AI conversations using instant SQLite FTS5..."
+          placeholder="Search through all your past AI conversations and synced Obsidian notes..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
@@ -158,38 +158,52 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
 
           {searchResults.length === 0 && !isSearching ? (
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-              No messages matched "{searchQuery}".
+              No messages or notes matched "{searchQuery}".
             </div>
           ) : (
-            searchResults.map((res) => (
-              <div 
-                key={res.id} 
-                className="archive-card"
-                style={{ cursor: 'pointer' }}
-                onClick={() => {
-                  onSelectConversation(res.conversation_id);
-                  setCurrentView('chat');
-                }}
-              >
-                <div className="archive-card-header">
-                  <span className="archive-card-title">{res.conversation_title || 'Conversation'}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {res.role === 'assistant' && (
-                      <span className="badge-provider" style={{ padding: '2px 8px', fontSize: '10px' }}>
-                        <Cpu size={10} style={{ marginRight: '3px' }} />
-                        {res.provider ? res.provider.toUpperCase() : 'AI'} : {res.model || 'model'}
+            searchResults.map((res) => {
+              const isObsidian = res.result_type === 'obsidian_note';
+              return (
+                <div 
+                  key={res.id} 
+                  className="archive-card"
+                  style={{ 
+                    cursor: 'pointer',
+                    borderColor: isObsidian ? 'rgba(168, 85, 247, 0.35)' : undefined
+                  }}
+                  onClick={() => {
+                    if (isObsidian) {
+                      setCurrentView('obsidian');
+                    } else if (res.conversation_id) {
+                      onSelectConversation(res.conversation_id);
+                      setCurrentView('chat');
+                    }
+                  }}
+                >
+                  <div className="archive-card-header">
+                    <span className="archive-card-title">{res.conversation_title || res.title || 'Conversation'}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {isObsidian ? (
+                        <span className="badge-provider" style={{ padding: '2px 8px', fontSize: '10px', background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.4)' }}>
+                          Obsidian Note
+                        </span>
+                      ) : res.role === 'assistant' ? (
+                        <span className="badge-provider" style={{ padding: '2px 8px', fontSize: '10px' }}>
+                          <Cpu size={10} style={{ marginRight: '3px' }} />
+                          {res.provider ? res.provider.toUpperCase() : 'AI'} : {res.model || 'model'}
+                        </span>
+                      ) : null}
+                      <span className="archive-card-meta">
+                        {new Date(res.timestamp).toLocaleString()} • {isObsidian ? (res.rel_path || 'VAULT NOTE') : res.role?.toUpperCase()}
                       </span>
-                    )}
-                    <span className="archive-card-meta">
-                      {new Date(res.timestamp).toLocaleString()} • {res.role.toUpperCase()}
-                    </span>
+                    </div>
+                  </div>
+                  <div className="archive-card-content">
+                    <FormattedText text={res.content} onSummarizeUrl={onSummarizeUrl} />
                   </div>
                 </div>
-                <div className="archive-card-content">
-                  <FormattedText text={res.content} onSummarizeUrl={onSummarizeUrl} />
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       ) : (

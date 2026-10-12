@@ -1,13 +1,75 @@
 {
   "name": "personalaiarchive",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server/index.js",
     "server": "node server/index.js",
     "client": "npm --prefix client run dev",
     "build:client": "npm --prefix client run build",
-    "build": "npm --prefix client run build"
+    "build": "npm --prefix client run build",
+    "electron": "electron .",
+    "rebuild:native": "electron-builder install-app-deps",
+    "pack:mac": "npm run build:client && electron-builder --mac --arm64",
+    "pack:mac:intel": "npm run build:client && electron-builder --mac --x64",
+    "pack:mac:universal": "npm run build:client && electron-builder --mac --universal"
+  },
+  "build": {
+    "appId": "com.personalaiarchive.app",
+    "productName": "Personal AI Archive",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 130,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "files": [
+      "client/dist/**/*",
+      "server/**/*",
+      "electron/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!data/**/*",
+      "!docs_screenshots/**/*",
+      "!*.md",
+      "!*.html",
+      "!*.pdf"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**/*"
+    ]
   },
   "keywords": [],
   "author": "",
@@ -23,5 +85,10 @@
     "multer": "^2.4.0",
     "openai": "^6.49.0",
     "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
+    "electron": "^41.7.1",
+    "electron-builder": "^26.15.3"
   }
 }
