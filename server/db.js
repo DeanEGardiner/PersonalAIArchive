@@ -246,6 +246,198 @@ const migrations = [
       );
       CREATE INDEX IF NOT EXISTS idx_obsidian_embeddings_note ON obsidian_note_embeddings(note_id);
     `);
+  },
+
+  // 6. Transition to Dual-Corpus Linked Digests (Search-first digests & deprecating categories)
+  () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS archive_digests (
+        id TEXT PRIMARY KEY,
+        corpus_type TEXT NOT NULL,         -- 'ai_conversations' | 'obsidian_notes' | 'unified'
+        title TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        entities_json TEXT DEFAULT '[]',
+        references_json TEXT DEFAULT '[]', -- JSON array: [{ id, title, rel_path, type }]
+        coverage_start TIMESTAMP,
+        coverage_end TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_archive_digests_corpus ON archive_digests(corpus_type, is_deleted);
+      CREATE INDEX IF NOT EXISTS idx_archive_digests_updated ON archive_digests(updated_at);
+
+      DROP TABLE IF EXISTS archive_digests_fts;
+      CREATE VIRTUAL TABLE archive_digests_fts USING fts5(
+        title,
+        summary_text,
+        entities_json,
+        content='archive_digests',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS digests_fts_ai AFTER INSERT ON archive_digests BEGIN
+        INSERT INTO archive_digests_fts(rowid, title, summary_text, entities_json)
+        VALUES (new.rowid, new.title, new.summary_text, new.entities_json);
+      END;
+      CREATE TRIGGER IF NOT EXISTS digests_fts_ad AFTER DELETE ON archive_digests BEGIN
+        INSERT INTO archive_digests_fts(archive_digests_fts, rowid, title, summary_text, entities_json)
+        VALUES ('delete', old.rowid, old.title, old.summary_text, old.entities_json);
+      END;
+      CREATE TRIGGER IF NOT EXISTS digests_fts_au AFTER UPDATE OF title, summary_text, entities_json ON archive_digests BEGIN
+        INSERT INTO archive_digests_fts(archive_digests_fts, rowid, title, summary_text, entities_json)
+        VALUES ('delete', old.rowid, old.title, old.summary_text, old.entities_json);
+        INSERT INTO archive_digests_fts(rowid, title, summary_text, entities_json)
+        VALUES (new.rowid, new.title, new.summary_text, new.entities_json);
+      END;
+
+      CREATE TABLE IF NOT EXISTS digest_embeddings (
+        digest_id TEXT PRIMARY KEY REFERENCES archive_digests(id) ON DELETE CASCADE,
+        embedding BLOB NOT NULL,
+        model TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_digest_embeddings_digest ON digest_embeddings(digest_id);
+
+      -- Migrate historical summaries to archive_digests if not already present
+      INSERT INTO archive_digests (id, corpus_type, title, summary_text, entities_json, references_json, coverage_start, coverage_end, created_at, updated_at, is_deleted)
+      SELECT 
+        s.id, 
+        'ai_conversations', 
+        COALESCE(c.name, CASE WHEN s.summary_type = 'global' THEN 'Global Executive Archive Digest' ELSE 'Conversation Digest' END),
+        s.summary_text,
+        '[]',
+        '[]',
+        s.coverage_start,
+        s.coverage_end,
+        s.created_at,
+        s.updated_at,
+        s.is_deleted
+      FROM archive_summaries s
+      LEFT JOIN categories c ON s.category_id = c.id
+      WHERE NOT EXISTS (SELECT 1 FROM archive_digests d WHERE d.id = s.id);
+
+      INSERT INTO archive_digests_fts(archive_digests_fts) VALUES ('rebuild');
+    `);
+  },
+
+  // 7. Atomic Note Chunking, Chunk Vector Embeddings, and Pre-Search Entity Index
+  () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS obsidian_chunks (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL REFERENCES obsidian_notes(id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        heading TEXT,
+        start_char INTEGER NOT NULL,
+        end_char INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_obsidian_chunks_note ON obsidian_chunks(note_id);
+
+      CREATE TABLE IF NOT EXISTS obsidian_chunk_embeddings (
+        chunk_id TEXT PRIMARY KEY REFERENCES obsidian_chunks(id) ON DELETE CASCADE,
+        embedding BLOB NOT NULL,
+        model TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_chunk ON obsidian_chunk_embeddings(chunk_id);
+
+      DROP TABLE IF EXISTS obsidian_chunks_fts;
+      CREATE VIRTUAL TABLE obsidian_chunks_fts USING fts5(
+        heading,
+        content,
+        content='obsidian_chunks',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON obsidian_chunks BEGIN
+        INSERT INTO obsidian_chunks_fts(rowid, heading, content)
+        VALUES (new.rowid, new.heading, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON obsidian_chunks BEGIN
+        INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts, rowid, heading, content)
+        VALUES ('delete', old.rowid, old.heading, old.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE OF heading, content ON obsidian_chunks BEGIN
+        INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts, rowid, heading, content)
+        VALUES ('delete', old.rowid, old.heading, old.content);
+        INSERT INTO obsidian_chunks_fts(rowid, heading, content)
+        VALUES (new.rowid, new.heading, new.content);
+      END;
+
+      CREATE TABLE IF NOT EXISTS archive_entities (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        entity_type TEXT DEFAULT 'general',
+        source_type TEXT NOT NULL,         -- 'obsidian_note' | 'conversation'
+        source_id TEXT NOT NULL,           -- note_id or conversation_id
+        chunk_id TEXT,
+        source_ref TEXT,                   -- rel_path or conversation title
+        char_offset INTEGER,
+        context_snippet TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_archive_entities_norm ON archive_entities(normalized_name);
+      CREATE INDEX IF NOT EXISTS idx_archive_entities_source ON archive_entities(source_type, source_id);
+    `);
+  },
+
+  // 8. Permanently backfill conversations default_provider and default_model from anchor message
+  () => {
+    const convs = db.prepare('SELECT id, default_provider, default_model FROM conversations WHERE is_deleted = 0').all();
+    const findAnchor = db.prepare(`
+      SELECT provider, model FROM messages 
+      WHERE conversation_id = ? AND is_deleted = 0 AND provider IS NOT NULL AND provider != 'system'
+      ORDER BY timestamp ASC LIMIT 1
+    `);
+    const updateConv = db.prepare(`
+      UPDATE conversations SET default_provider = ?, default_model = ? WHERE id = ?
+    `);
+
+    for (const c of convs) {
+      const anchor = findAnchor.get(c.id);
+      if (anchor && anchor.provider) {
+        if (c.default_provider !== anchor.provider || c.default_model !== anchor.model) {
+          updateConv.run(anchor.provider, anchor.model, c.id);
+        }
+      }
+    }
+  },
+
+  // 9. Backfill obsidian_notes created_at from 'Note created' property
+  () => {
+    const notes = db.prepare('SELECT id, content FROM obsidian_notes').all();
+    const updateStmt = db.prepare('UPDATE obsidian_notes SET created_at = ? WHERE id = ?');
+    const patterns = [
+      /(?:^|\n)\s*Note\s+created\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*date\s+created\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*created\s+date\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*created_at\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*created\s*:\s*["']?([^"'\r\n]+)["']?/i
+    ];
+
+    for (const n of notes) {
+      if (!n.content) continue;
+      for (const pat of patterns) {
+        const match = n.content.match(pat);
+        if (match && match[1]) {
+          const raw = match[1].trim();
+          if (!raw || raw.toLowerCase() === 'null' || raw.toLowerCase() === 'undefined') continue;
+          let d = new Date(raw);
+          if (isNaN(d.getTime())) {
+            d = new Date(raw.replace(/\s+/, 'T'));
+          }
+          if (!isNaN(d.getTime())) {
+            updateStmt.run(d.toISOString(), n.id);
+            break;
+          }
+        }
+      }
+    }
   }
 ];
 

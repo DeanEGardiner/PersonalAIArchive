@@ -98,6 +98,36 @@ class ObsidianSyncService {
     return path.basename(fileName, '.md').trim();
   }
 
+  extractNoteCreatedDate(content) {
+    if (!content || typeof content !== 'string') return null;
+
+    const patterns = [
+      /(?:^|\n)\s*Note\s+created\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*date\s+created\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*created\s+date\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*created_at\s*:\s*["']?([^"'\r\n]+)["']?/i,
+      /(?:^|\n)\s*created\s*:\s*["']?([^"'\r\n]+)["']?/i
+    ];
+
+    for (const pat of patterns) {
+      const match = content.match(pat);
+      if (match && match[1]) {
+        const raw = match[1].trim();
+        if (!raw || raw.toLowerCase() === 'null' || raw.toLowerCase() === 'undefined') continue;
+
+        let d = new Date(raw);
+        if (isNaN(d.getTime())) {
+          d = new Date(raw.replace(/\s+/, 'T'));
+        }
+        if (!isNaN(d.getTime())) {
+          return d.toISOString();
+        }
+      }
+    }
+
+    return null;
+  }
+
   /**
    * Two-Way Sync (Transactional & Incremental)
    */
@@ -119,7 +149,7 @@ class ObsidianSyncService {
     const diskNotes = this.findMarkdownFiles(vaultPath);
     const diskRelPaths = new Set();
 
-    const findNoteStmt = db.prepare('SELECT id, checksum, mtime_ms FROM obsidian_notes WHERE rel_path = ?');
+    const findNoteStmt = db.prepare('SELECT id, title, checksum, mtime_ms FROM obsidian_notes WHERE rel_path = ?');
     const insertNoteStmt = db.prepare(`
       INSERT INTO obsidian_notes (id, file_name, rel_path, title, content, checksum, mtime_ms, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -130,6 +160,7 @@ class ObsidianSyncService {
       WHERE id = ?
     `);
     const deleteNoteStmt = db.prepare('DELETE FROM obsidian_notes WHERE id = ?');
+    const deleteEntitiesStmt = db.prepare("DELETE FROM archive_entities WHERE source_type = 'obsidian_note' AND source_id = ?");
     const allDbNotes = db.prepare('SELECT id, rel_path FROM obsidian_notes').all();
 
     // Run import inside a single database transaction
@@ -142,31 +173,50 @@ class ObsidianSyncService {
           const mtimeMs = Math.round(stat.mtimeMs);
           const existing = findNoteStmt.get(note.relPath);
 
-          // Fast skip if mtime is unchanged
+          // Fast skip ONLY if mtime is unchanged AND chunks already exist in DB
           if (existing && existing.mtime_ms === mtimeMs) {
-            continue;
+            const hasChunks = db.prepare('SELECT count(*) as c FROM obsidian_chunks WHERE note_id = ?').get(existing.id)?.c > 0;
+            if (hasChunks) {
+              continue;
+            }
           }
 
           const content = fs.readFileSync(note.fullPath, 'utf8');
           const checksum = this.computeChecksum(content);
 
+          const noteCreated = this.extractNoteCreatedDate(content);
+
           if (existing && existing.checksum === checksum) {
-            // Content identical, just update mtime
-            updateNoteStmt.run(existing.title || note.fileName, content, checksum, mtimeMs, new Date().toISOString(), existing.id);
+            // Content identical, update mtime and only create chunks if missing
+            const noteTitle = existing.title || this.extractTitle(content, note.fileName);
+            if (noteCreated) {
+              db.prepare('UPDATE obsidian_notes SET created_at = ? WHERE id = ?').run(noteCreated, existing.id);
+            }
+            updateNoteStmt.run(noteTitle, content, checksum, mtimeMs, new Date().toISOString(), existing.id);
+            const hasChunks = db.prepare('SELECT count(*) as c FROM obsidian_chunks WHERE note_id = ?').get(existing.id)?.c > 0;
+            if (!hasChunks) {
+              this.processNoteChunksAndEntities(existing.id, noteTitle, note.relPath, content);
+            }
             continue;
           }
 
           const title = this.extractTitle(content, note.fileName);
           const now = new Date().toISOString();
+          const createdAt = noteCreated || now;
 
           if (!existing) {
             const id = uuidv4();
-            insertNoteStmt.run(id, note.fileName, note.relPath, title, content, checksum, mtimeMs, now, now);
+            insertNoteStmt.run(id, note.fileName, note.relPath, title, content, checksum, mtimeMs, createdAt, now);
             importedCount++;
+            this.processNoteChunksAndEntities(id, title, note.relPath, content);
             embeddingService.queueObsidianNote(id, `${title}\n\n${content}`.slice(0, 4000));
           } else {
+            if (noteCreated) {
+              db.prepare('UPDATE obsidian_notes SET created_at = ? WHERE id = ?').run(noteCreated, existing.id);
+            }
             updateNoteStmt.run(title, content, checksum, mtimeMs, now, existing.id);
             updatedCount++;
+            this.processNoteChunksAndEntities(existing.id, title, note.relPath, content);
             embeddingService.queueObsidianNote(existing.id, `${title}\n\n${content}`.slice(0, 4000));
           }
         } catch (err) {
@@ -174,10 +224,11 @@ class ObsidianSyncService {
         }
       }
 
-      // Clean up notes in DB deleted from disk
+      // Clean up notes in DB deleted from disk (and clean up their non-FK entities)
       for (const dbNote of allDbNotes) {
         if (!diskRelPaths.has(dbNote.rel_path)) {
           deleteNoteStmt.run(dbNote.id);
+          deleteEntitiesStmt.run(dbNote.id);
           deletedCount++;
         }
       }
@@ -315,9 +366,9 @@ ${s.summary_text}
   searchNotes(query, limit = 50) {
     if (!query || !query.trim()) {
       return db.prepare(`
-        SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, updated_at
+        SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, created_at, updated_at
         FROM obsidian_notes
-        ORDER BY mtime_ms DESC
+        ORDER BY created_at DESC
         LIMIT ?
       `).all(limit);
     }
@@ -336,7 +387,7 @@ ${s.summary_text}
       // 1. Try AND match on meaningful terms first
       const andExpr = searchTerms.map(w => `${w}*`).join(' AND ');
       ftsHits = db.prepare(`
-        SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.updated_at
+        SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.created_at, n.updated_at
         FROM obsidian_notes_fts fts
         JOIN obsidian_notes n ON fts.rowid = n.rowid
         WHERE obsidian_notes_fts MATCH ?
@@ -348,7 +399,7 @@ ${s.summary_text}
       if (ftsHits.length === 0 && searchTerms.length > 1) {
         const orExpr = searchTerms.map(w => `${w}*`).join(' OR ');
         ftsHits = db.prepare(`
-          SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.updated_at
+          SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.created_at, n.updated_at
           FROM obsidian_notes_fts fts
           JOIN obsidian_notes n ON fts.rowid = n.rowid
           WHERE obsidian_notes_fts MATCH ?
@@ -358,10 +409,10 @@ ${s.summary_text}
       }
     } catch (_) {
       ftsHits = db.prepare(`
-        SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, updated_at
+        SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, created_at, updated_at
         FROM obsidian_notes
         WHERE title LIKE ? OR content LIKE ?
-        ORDER BY mtime_ms DESC
+        ORDER BY created_at DESC
         LIMIT ?
       `).all(`%${cleanQuery}%`, `%${cleanQuery}%`, limit);
     }
@@ -369,8 +420,278 @@ ${s.summary_text}
     return ftsHits;
   }
 
+  chunkNoteContent(content, maxChunkChars = 1500, overlapChars = 200) {
+    if (!content || !content.trim()) return [];
+
+    const lines = content.split('\n');
+    const sections = [];
+    let currentHeading = 'Document';
+    let currentLines = [];
+    let currentStartChar = 0;
+    let currentCharIndex = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const headingMatch = line.match(/^(#{1,4}\s+.+)$/);
+
+      if (headingMatch && currentLines.length > 0) {
+        sections.push({
+          heading: currentHeading,
+          text: currentLines.join('\n'),
+          startChar: currentStartChar,
+          endChar: currentCharIndex - 1
+        });
+        currentHeading = headingMatch[1].replace(/^#+\s+/, '').trim();
+        currentLines = [line];
+        currentStartChar = currentCharIndex;
+      } else {
+        if (headingMatch && currentLines.length === 0) {
+          currentHeading = headingMatch[1].replace(/^#+\s+/, '').trim();
+        }
+        currentLines.push(line);
+      }
+      currentCharIndex += line.length + 1;
+    }
+
+    if (currentLines.length > 0) {
+      sections.push({
+        heading: currentHeading,
+        text: currentLines.join('\n'),
+        startChar: currentStartChar,
+        endChar: currentCharIndex - 1
+      });
+    }
+
+    const chunks = [];
+    let chunkIndex = 0;
+
+    for (const sec of sections) {
+      if (sec.text.length <= maxChunkChars) {
+        chunks.push({
+          chunkIndex: chunkIndex++,
+          heading: sec.heading,
+          startChar: sec.startChar,
+          endChar: sec.endChar,
+          content: sec.text.trim()
+        });
+      } else {
+        const paragraphs = sec.text.split(/\n\s*\n/);
+        let curChunk = '';
+        let chunkStart = sec.startChar;
+        let runningOffset = sec.startChar;
+
+        for (const p of paragraphs) {
+          const trimmedP = p.trim();
+          if (!trimmedP) {
+            runningOffset += p.length + 2;
+            continue;
+          }
+
+          if (curChunk.length + trimmedP.length + 2 <= maxChunkChars) {
+            curChunk += (curChunk ? '\n\n' : '') + trimmedP;
+          } else {
+            if (curChunk) {
+              chunks.push({
+                chunkIndex: chunkIndex++,
+                heading: sec.heading,
+                startChar: chunkStart,
+                endChar: runningOffset - 1,
+                content: curChunk.trim()
+              });
+              chunkStart = runningOffset;
+            }
+            if (trimmedP.length > maxChunkChars) {
+              for (let s = 0; s < trimmedP.length; s += (maxChunkChars - overlapChars)) {
+                const subText = trimmedP.slice(s, s + maxChunkChars);
+                chunks.push({
+                  chunkIndex: chunkIndex++,
+                  heading: sec.heading,
+                  startChar: runningOffset + s,
+                  endChar: runningOffset + Math.min(s + maxChunkChars, trimmedP.length),
+                  content: subText.trim()
+                });
+              }
+            } else {
+              curChunk = trimmedP;
+            }
+          }
+          runningOffset += p.length + 2;
+        }
+
+        if (curChunk) {
+          chunks.push({
+            chunkIndex: chunkIndex++,
+            heading: sec.heading,
+            startChar: chunkStart,
+            endChar: runningOffset - 1,
+            content: curChunk.trim()
+          });
+        }
+      }
+    }
+
+    return chunks.filter(c => c.content && c.content.length > 20);
+  }
+
+  extractEntitiesFromText(text) {
+    if (!text || typeof text !== 'string') return [];
+    const entities = new Map();
+
+    const addEntity = (rawName, entityType, offset, snippet) => {
+      if (!rawName) return;
+      const clean = rawName.replace(/^["'`]|["'`]$/g, '').trim();
+      if (clean.length < 2 || clean.length > 60) return;
+      const norm = clean.toLowerCase();
+      if (/^\d+$/.test(norm) || STOP_WORDS.has(norm)) return;
+
+      if (!entities.has(norm)) {
+        entities.set(norm, {
+          name: clean,
+          normalizedName: norm,
+          entityType,
+          offset: offset || 0,
+          snippet: snippet || clean,
+          count: 1
+        });
+      } else {
+        entities.get(norm).count++;
+      }
+    };
+
+    // 1. Wiki-links [[Entity Name]] or [[Entity Name|Label]]
+    const wikiRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+    let m;
+    while ((m = wikiRegex.exec(text)) !== null) {
+      const matchPos = m.index;
+      const snippet = text.slice(Math.max(0, matchPos - 40), Math.min(text.length, matchPos + 80)).replace(/\n/g, ' ');
+      addEntity(m[1].trim(), 'wikilink', matchPos, snippet);
+    }
+
+    // 2. Markdown tags #tag-name
+    const tagRegex = /(?:^|\s)#([a-zA-Z0-9_\-\/]{2,30})\b/g;
+    while ((m = tagRegex.exec(text)) !== null) {
+      const matchPos = m.index;
+      const snippet = text.slice(Math.max(0, matchPos - 40), Math.min(text.length, matchPos + 80)).replace(/\n/g, ' ');
+      addEntity(m[1].trim(), 'tag', matchPos, snippet);
+    }
+
+    // 3. Multi-word Proper Noun Phrases (e.g. "The Black Crowes", "Enmore Theatre", "LM Studio")
+    const properNounRegex = /\b(?:The\s+)?[A-Z][a-zA-Z0-9]*(?:\s+(?:and|of|the|at|in|on|for|&|de|la)\s+[A-Z][a-zA-Z0-9]*|\s+[A-Z][a-zA-Z0-9]*)+\b/g;
+    while ((m = properNounRegex.exec(text)) !== null) {
+      const matchPos = m.index;
+      const phrase = m[0].trim();
+      if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}/.test(phrase)) {
+        continue;
+      }
+      const snippet = text.slice(Math.max(0, matchPos - 40), Math.min(text.length, matchPos + 80)).replace(/\n/g, ' ');
+      addEntity(phrase, 'proper_noun', matchPos, snippet);
+    }
+
+    return Array.from(entities.values());
+  }
+
+  processNoteChunksAndEntities(noteId, title, relPath, content) {
+    if (!noteId || !content) return;
+
+    db.prepare('DELETE FROM obsidian_chunks WHERE note_id = ?').run(noteId);
+    db.prepare("DELETE FROM archive_entities WHERE source_type = 'obsidian_note' AND source_id = ?").run(noteId);
+
+    const insertEntityStmt = db.prepare(`
+      INSERT OR IGNORE INTO archive_entities (
+        id, name, normalized_name, entity_type, source_type, source_id, chunk_id, source_ref, char_offset, context_snippet
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    if (title && title.length > 1) {
+      insertEntityStmt.run(
+        uuidv4(),
+        title,
+        title.toLowerCase().trim(),
+        'note_title',
+        'obsidian_note',
+        noteId,
+        null,
+        relPath,
+        0,
+        `Note: ${title} (${relPath})`
+      );
+    }
+
+    const chunks = this.chunkNoteContent(content);
+    const insertChunkStmt = db.prepare(`
+      INSERT INTO obsidian_chunks (id, note_id, chunk_index, heading, start_char, end_char, content)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const chunk of chunks) {
+      const chunkId = uuidv4();
+      insertChunkStmt.run(
+        chunkId,
+        noteId,
+        chunk.chunkIndex,
+        chunk.heading || null,
+        chunk.startChar,
+        chunk.endChar,
+        chunk.content
+      );
+
+      try {
+        embeddingService.queueChunk(chunkId, chunk.content);
+      } catch (_) {}
+
+      const chunkEntities = this.extractEntitiesFromText(chunk.content);
+      for (const ent of chunkEntities) {
+        insertEntityStmt.run(
+          uuidv4(),
+          ent.name,
+          ent.normalizedName,
+          ent.entityType,
+          'obsidian_note',
+          noteId,
+          chunkId,
+          relPath,
+          chunk.startChar + ent.offset,
+          ent.snippet
+        );
+      }
+    }
+  }
+
+  reindexAllNotes() {
+    const notes = db.prepare('SELECT id, title, rel_path, content FROM obsidian_notes').all();
+
+    db.transaction(() => {
+      for (const note of notes) {
+        this.processNoteChunksAndEntities(note.id, note.title, note.rel_path, note.content);
+      }
+    })();
+
+    const chunkRow = db.prepare('SELECT COUNT(*) as c FROM obsidian_chunks').get();
+    const entRow = db.prepare('SELECT COUNT(*) as c FROM archive_entities').get();
+
+    return {
+      totalNotes: notes.length,
+      totalChunks: chunkRow?.c || 0,
+      totalEntities: entRow?.c || 0
+    };
+  }
+
   getNoteById(id) {
-    return db.prepare('SELECT * FROM obsidian_notes WHERE id = ?').get(id);
+    if (!id) return null;
+    const note = db.prepare('SELECT * FROM obsidian_notes WHERE id = ?').get(id);
+    if (note) return note;
+
+    const chunkNote = db.prepare(`
+      SELECT n.* FROM obsidian_notes n
+      JOIN obsidian_chunks c ON c.note_id = n.id
+      WHERE c.id = ?
+    `).get(id);
+    return chunkNote || null;
+  }
+
+  getNoteByPath(relPath) {
+    if (!relPath) return null;
+    return db.prepare('SELECT * FROM obsidian_notes WHERE rel_path = ?').get(relPath) || null;
   }
 
   getStatus() {
@@ -391,4 +712,17 @@ ${s.summary_text}
   }
 }
 
-module.exports = new ObsidianSyncService();
+const instance = new ObsidianSyncService();
+
+try {
+  const noteCount = db.prepare('SELECT count(*) as c FROM obsidian_notes').get()?.c || 0;
+  const chunkCount = db.prepare('SELECT count(*) as c FROM obsidian_chunks').get()?.c || 0;
+  if (noteCount > 0 && chunkCount === 0) {
+    console.log(`[ObsidianSync] Initializing chunks for ${noteCount} notes...`);
+    instance.reindexAllNotes();
+  }
+} catch (err) {
+  console.warn('[ObsidianSync] Auto-chunk initialization check failed:', err.message);
+}
+
+module.exports = instance;

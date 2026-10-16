@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { app, BrowserWindow, Menu, shell } = require('electron');
 const path = require('path');
 const http = require('http');
@@ -5,7 +6,7 @@ const http = require('http');
 let mainWindow = null;
 let expressServer = null;
 
-const PORT = process.env.PORT || 3002;
+const PORT = parseInt(process.env.PORT || '3002', 10);
 const HOST = '127.0.0.1';
 
 // Set application metadata

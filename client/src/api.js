@@ -54,6 +54,14 @@ export const api = {
     });
   },
 
+  updateConversation(id, { title, provider, model }) {
+    return request(`/api/conversations/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, provider, model })
+    });
+  },
+
   deleteConversation(id) {
     return request(`/api/conversations/${id}`, {
       method: 'DELETE'
@@ -178,9 +186,27 @@ export const api = {
     return request(`/api/archive/timeline?limit=${limit}`);
   },
 
-  // Summaries & Categories
-  getSummaries() {
-    return request('/api/summaries');
+  // Summaries & Search Digests
+  getDigests(corpus = 'all') {
+    const qs = corpus && corpus !== 'all' ? `?corpus=${encodeURIComponent(corpus)}` : '';
+    return request(`/api/digests${qs}`);
+  },
+
+  getDigestsPreview(mode = 'incremental') {
+    return request(`/api/digests/preview?mode=${encodeURIComponent(mode)}`);
+  },
+
+  generateDigests({ corpus = 'all', mode = 'incremental', overrideProvider, overrideModel, apiKey } = {}) {
+    return request('/api/digests/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ corpus, mode, overrideProvider, overrideModel, apiKey })
+    });
+  },
+
+  getSummaries(corpus = 'all') {
+    const qs = corpus && corpus !== 'all' ? `?corpus=${encodeURIComponent(corpus)}` : '';
+    return request(`/api/summaries${qs}`);
   },
 
   getGlobalSummary() {
@@ -191,11 +217,11 @@ export const api = {
     return request('/api/categories');
   },
 
-  generateSummaries({ mode = 'incremental', overrideProvider, overrideModel, apiKey } = {}) {
+  generateSummaries({ corpus = 'all', mode = 'incremental', overrideProvider, overrideModel, apiKey } = {}) {
     return request('/api/summaries/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, overrideProvider, overrideModel, apiKey })
+      body: JSON.stringify({ corpus, mode, overrideProvider, overrideModel, apiKey })
     });
   },
 

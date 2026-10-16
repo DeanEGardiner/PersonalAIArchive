@@ -15,7 +15,7 @@ import {
 import { api } from '../api';
 import FormattedText from './FormattedText';
 
-export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWithNote }) {
+export default function ObsidianNotesView({ initialSelectedNoteId, onClearInitialNote, onInsertIntoComposer, onStartChatWithNote }) {
   const [notes, setNotes] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [status, setStatus] = useState(null);
@@ -30,6 +30,16 @@ export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWit
     loadData();
   }, []);
 
+  useEffect(() => {
+    if (initialSelectedNoteId && notes.length > 0) {
+      const match = notes.find(n => n.id === initialSelectedNoteId || n.rel_path === initialSelectedNoteId || n.file_name === initialSelectedNoteId);
+      if (match) {
+        setSelectedNote(match);
+        if (onClearInitialNote) onClearInitialNote();
+      }
+    }
+  }, [initialSelectedNoteId, notes, onClearInitialNote]);
+
   const loadData = async () => {
     setIsLoading(true);
     try {
@@ -39,8 +49,14 @@ export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWit
       ]);
       setStatus(statusRes);
       setNotes(notesRes);
-      if (notesRes.length > 0 && !selectedNote) {
-        setSelectedNote(notesRes[0]);
+      if (notesRes.length > 0) {
+        if (initialSelectedNoteId) {
+          const match = notesRes.find(n => n.id === initialSelectedNoteId || n.rel_path === initialSelectedNoteId || n.file_name === initialSelectedNoteId);
+          setSelectedNote(match || notesRes[0]);
+          if (match && onClearInitialNote) onClearInitialNote();
+        } else if (!selectedNote) {
+          setSelectedNote(notesRes[0]);
+        }
       }
     } catch (err) {
       console.error('Failed to load Obsidian notes:', err);
@@ -217,9 +233,16 @@ export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWit
                       </span>
                     </div>
 
-                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
-                      <Folder size={11} color="var(--accent-primary)" />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{note.rel_path}</span>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden' }}>
+                        <Folder size={11} color="var(--accent-primary)" />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{note.rel_path}</span>
+                      </div>
+                      {note.created_at && (
+                        <span style={{ flexShrink: 0, fontSize: '11px', color: 'var(--text-muted)' }}>
+                          {new Date(note.created_at).toLocaleDateString()}
+                        </span>
+                      )}
                     </div>
 
                     <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: '1.4' }}>
@@ -244,6 +267,9 @@ export default function ObsidianNotesView({ onInsertIntoComposer, onStartChatWit
                   </h3>
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span>Path: <code>{selectedNote.rel_path}</code></span>
+                    {selectedNote.created_at && (
+                      <span>· Created {new Date(selectedNote.created_at).toLocaleDateString()}</span>
+                    )}
                     {selectedNote.updated_at && (
                       <span>· Synced {new Date(selectedNote.updated_at).toLocaleDateString()}</span>
                     )}

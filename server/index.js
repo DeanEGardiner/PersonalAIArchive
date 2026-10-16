@@ -153,6 +153,41 @@ app.delete('/api/conversations/:id', (req, res) => {
   res.json({ success: true });
 });
 
+app.patch('/api/conversations/:id', (req, res) => {
+  const { id } = req.params;
+  const { title, provider, model } = req.body || {};
+  const conv = db.prepare('SELECT * FROM conversations WHERE id = ? AND is_deleted = 0').get(id);
+  if (!conv) {
+    return res.status(404).json({ error: 'Conversation not found' });
+  }
+
+  const existingMsgCount = db.prepare('SELECT COUNT(*) as count FROM messages WHERE conversation_id = ? AND is_deleted = 0').get(id)?.count || 0;
+
+  // Once a conversation has messages, its model and provider are strictly locked to preserve thread integrity
+  if (existingMsgCount > 0 && ((provider !== undefined && provider !== conv.default_provider) || (model !== undefined && model !== conv.default_model))) {
+    return res.status(409).json({ error: 'Conversation model is locked once messages have been posted.' });
+  }
+
+  const now = new Date().toISOString();
+  const newTitle = title !== undefined ? title : conv.title;
+  const newProvider = provider !== undefined ? provider : conv.default_provider;
+  const newModel = model !== undefined ? model : conv.default_model;
+
+  db.prepare(`
+    UPDATE conversations 
+    SET title = ?, default_provider = ?, default_model = ?, updated_at = ?
+    WHERE id = ?
+  `).run(newTitle, newProvider, newModel, now, id);
+
+  res.json({
+    id,
+    title: newTitle,
+    default_provider: newProvider,
+    default_model: newModel,
+    updated_at: now
+  });
+});
+
 app.get('/api/conversations/:id', (req, res) => {
   const { id } = req.params;
   const conv = db.prepare('SELECT * FROM conversations WHERE id = ? AND is_deleted = 0').get(id);
@@ -165,6 +200,17 @@ app.get('/api/conversations/:id', (req, res) => {
     WHERE conversation_id = ? AND is_deleted = 0
     ORDER BY timestamp ASC
   `).all(id);
+
+  // Read-only model fallback attribution if default_provider is null in legacy rows
+  if (!conv.default_provider && messages.length > 0) {
+    const nonSystem = messages.filter(m => m.provider && m.provider !== 'system');
+    const userMsgs = nonSystem.filter(m => m.role === 'user');
+    const anchorMsg = userMsgs.length > 0 ? userMsgs[0] : nonSystem[0];
+    if (anchorMsg) {
+      conv.default_provider = anchorMsg.provider;
+      conv.default_model = anchorMsg.model;
+    }
+  }
 
   // Batch query attachments (fixes N+1)
   if (messages.length > 0) {
@@ -223,8 +269,31 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
     conversation = db.prepare('SELECT * FROM conversations WHERE id = ? AND is_deleted = 0').get(convId);
   }
 
-  const targetProvider = provider || conversation?.default_provider || config.DEFAULT_PROVIDER;
-  const targetModel = config.resolveModel(targetProvider, model || conversation?.default_model);
+  const existingMsgCount = convId ? (db.prepare('SELECT COUNT(*) as count FROM messages WHERE conversation_id = ? AND is_deleted = 0').get(convId)?.count || 0) : 0;
+
+  let targetProvider;
+  let targetModel;
+
+  if (!conversation || existingMsgCount === 0) {
+    // New or unstarted conversation: accept requested provider/model or fall back
+    targetProvider = provider || conversation?.default_provider || config.DEFAULT_PROVIDER;
+    targetModel = config.resolveModel(targetProvider, model || conversation?.default_model);
+  } else {
+    // Conversation has already started: model & provider are strictly locked to anchor
+    targetProvider = conversation.default_provider;
+    targetModel = conversation.default_model;
+
+    if (!targetProvider || !targetModel) {
+      const anchor = db.prepare(`
+        SELECT provider, model FROM messages 
+        WHERE conversation_id = ? AND is_deleted = 0 AND provider IS NOT NULL AND provider != 'system'
+        ORDER BY timestamp ASC LIMIT 1
+      `).get(convId);
+      targetProvider = anchor?.provider || config.DEFAULT_PROVIDER;
+      targetModel = config.resolveModel(targetProvider, anchor?.model);
+      db.prepare('UPDATE conversations SET default_provider = ?, default_model = ? WHERE id = ?').run(targetProvider, targetModel, convId);
+    }
+  }
 
   if (!conversation) {
     convId = uuidv4();
@@ -233,13 +302,21 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
       INSERT INTO conversations (id, title, default_provider, default_model, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(convId, cleanTitle, targetProvider, targetModel, now, now);
-    conversation = { id: convId, title: cleanTitle };
-  } else if (!conversation.title || conversation.title === 'New Conversation' || conversation.title === 'Untitled Conversation') {
-    const cleanTitle = cleanContent.slice(0, 40) + (cleanContent.length > 40 ? '...' : '');
-    db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(cleanTitle, now, convId);
-    conversation.title = cleanTitle;
+    conversation = { id: convId, title: cleanTitle, default_provider: targetProvider, default_model: targetModel };
   } else {
-    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, convId);
+    const isDefaultTitle = !conversation.title || conversation.title === 'New Conversation' || conversation.title === 'Untitled Conversation';
+    const cleanTitle = isDefaultTitle ? (cleanContent.slice(0, 40) + (cleanContent.length > 40 ? '...' : '')) : conversation.title;
+
+    if (existingMsgCount === 0) {
+      db.prepare('UPDATE conversations SET title = ?, default_provider = ?, default_model = ?, updated_at = ? WHERE id = ?').run(cleanTitle, targetProvider, targetModel, now, convId);
+      conversation.default_provider = targetProvider;
+      conversation.default_model = targetModel;
+    } else if (isDefaultTitle) {
+      db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(cleanTitle, now, convId);
+    } else {
+      db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, convId);
+    }
+    conversation.title = cleanTitle;
   }
 
   // 1. Create User Message (FTS is updated automatically via trigger!)
@@ -323,6 +400,7 @@ app.post(['/api/conversations/:id/posts', '/api/posts'], async (req, res) => {
     try {
       const searchRes = await hybridSearch.assembleContext(cleanContent, {
         excludeMessageId: userMsgId,
+        excludeConversationId: convId,
         maxTotalChars: 7500
       });
       archiveContext = searchRes.contextText;
@@ -582,6 +660,7 @@ app.post('/api/summarize-url', async (req, res) => {
       url: result.url,
       title: result.title,
       summary: result.summary,
+      provider: result.provider || 'gemini',
       model: result.model
     });
   } catch (err) {
@@ -619,13 +698,15 @@ app.get('/api/archive/search', async (req, res) => {
       result_type: 'message'
     }));
 
+    const keywords = hybridSearch.extractKeywords(q);
     const formattedNotes = obsidianNotes.map(n => ({
       ...n,
+      content: n.preview || (n.content ? hybridSearch.extractCenteredSnippet(n.content, keywords, 500) : ''),
       result_type: 'obsidian_note',
       conversation_id: null,
       conversation_title: n.title,
       role: 'note',
-      timestamp: n.updated_at || (n.mtime_ms ? new Date(n.mtime_ms).toISOString() : new Date().toISOString())
+      timestamp: n.created_at || n.updated_at || (n.mtime_ms ? new Date(n.mtime_ms).toISOString() : new Date().toISOString())
     }));
 
     // Combine results: matching notes + messages
@@ -666,51 +747,94 @@ app.get('/api/archive/timeline', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Summarization & Category Endpoints
+// Summarization & Search Digest Endpoints
 // -------------------------------------------------------------
+app.get('/api/digests/preview', (req, res) => {
+  const { mode = 'incremental' } = req.query;
+  const pending = summarizer.getPendingCounts(mode);
+  const summarizerConf = summarizer.getSummarizerConfig();
+  res.json({ ...pending, config: summarizerConf });
+});
+
+app.get('/api/digests', (req, res) => {
+  const { corpus } = req.query;
+  let query = 'SELECT * FROM archive_digests WHERE is_deleted = 0';
+  const params = [];
+  if (corpus && corpus !== 'all') {
+    query += ' AND corpus_type = ?';
+    params.push(corpus);
+  }
+  query += ' ORDER BY created_at DESC';
+  const rows = db.prepare(query).all(...params);
+  res.json(rows.map(r => ({
+    ...r,
+    entities: (() => { try { return JSON.parse(r.entities_json || '[]'); } catch (_) { return []; } })(),
+    references: (() => { try { return JSON.parse(r.references_json || '[]'); } catch (_) { return []; } })()
+  })));
+});
+
+app.post('/api/digests/generate', async (req, res) => {
+  const { corpus = 'all', mode = 'incremental', overrideProvider, overrideModel, apiKey } = req.body || {};
+  try {
+    const result = await summarizer.runSummarization({ corpus, mode, overrideProvider, overrideModel, apiKey });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backward-compatibility endpoints for existing frontend calls
 app.get('/api/summaries/preview', (req, res) => {
   const { mode = 'incremental' } = req.query;
-  const preview = summarizer.getPendingMessagesCount(mode);
+  const pending = summarizer.getPendingCounts(mode);
   const summarizerConf = summarizer.getSummarizerConfig();
-  res.json({ ...preview, config: summarizerConf });
+  res.json({ count: pending.ai_conversations.count, ...pending, config: summarizerConf });
 });
 
 app.get('/api/categories', (req, res) => {
-  const categories = db.prepare(`
-    SELECT c.*, 
-      (SELECT summary_text FROM archive_summaries WHERE category_id = c.id AND is_deleted = 0 ORDER BY created_at DESC LIMIT 1) as latest_summary,
-      (SELECT coverage_end FROM archive_summaries WHERE category_id = c.id AND is_deleted = 0 ORDER BY created_at DESC LIMIT 1) as last_updated
-    FROM categories c
-    WHERE c.is_deleted = 0
-    ORDER BY c.name ASC
-  `).all();
-  res.json(categories);
+  // Scrapped category system: return empty array for clean backwards-compatibility
+  res.json([]);
 });
 
 app.get('/api/summaries', (req, res) => {
-  const summaries = db.prepare(`
-    SELECT s.*, c.name as category_name
-    FROM archive_summaries s
-    LEFT JOIN categories c ON s.category_id = c.id
-    WHERE s.is_deleted = 0
-    ORDER BY s.created_at DESC
-  `).all();
-  res.json(summaries);
+  const { corpus } = req.query;
+  let query = 'SELECT * FROM archive_digests WHERE is_deleted = 0';
+  const params = [];
+  if (corpus && corpus !== 'all') {
+    query += ' AND corpus_type = ?';
+    params.push(corpus);
+  }
+  query += ' ORDER BY created_at DESC';
+  const rows = db.prepare(query).all(...params);
+  res.json(rows.map(r => ({
+    ...r,
+    entities: (() => { try { return JSON.parse(r.entities_json || '[]'); } catch (_) { return []; } })(),
+    references: (() => { try { return JSON.parse(r.references_json || '[]'); } catch (_) { return []; } })()
+  })));
 });
 
 app.get('/api/summaries/global', (req, res) => {
   const global = db.prepare(`
-    SELECT * FROM archive_summaries 
-    WHERE summary_type = 'global' AND is_deleted = 0 
+    SELECT * FROM archive_digests 
+    WHERE (title LIKE '%global%' OR corpus_type = 'unified') AND is_deleted = 0 
+    ORDER BY created_at DESC LIMIT 1
+  `).get() || db.prepare(`
+    SELECT * FROM archive_digests 
+    WHERE is_deleted = 0 
     ORDER BY created_at DESC LIMIT 1
   `).get();
+  
+  if (global) {
+    global.entities = (() => { try { return JSON.parse(global.entities_json || '[]'); } catch (_) { return []; } })();
+    global.references = (() => { try { return JSON.parse(global.references_json || '[]'); } catch (_) { return []; } })();
+  }
   res.json(global || null);
 });
 
 app.post('/api/summaries/generate', async (req, res) => {
-  const { mode = 'incremental', overrideProvider, overrideModel, apiKey } = req.body || {};
+  const { corpus = 'all', mode = 'incremental', overrideProvider, overrideModel, apiKey } = req.body || {};
   try {
-    const result = await summarizer.runSummarization({ mode, overrideProvider, overrideModel, apiKey });
+    const result = await summarizer.runSummarization({ corpus, mode, overrideProvider, overrideModel, apiKey });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -740,55 +864,51 @@ app.get('/api/export/markdown', (req, res) => {
 
     // 1. Summaries on disk
     if (fs.existsSync(SUMMARIES_DIR)) {
-      const summaryFiles = fs.readdirSync(SUMMARIES_DIR).filter(f => f.endsWith('.md'));
-      for (const file of summaryFiles) {
-        const filePath = path.join(SUMMARIES_DIR, file);
-        archive.file(filePath, { name: `Summaries/${file}` });
-        addedSummaries.add(file.toLowerCase());
-      }
+      const scanDir = (dir, prefix = 'Summaries') => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scanDir(fullPath, `${prefix}/${entry.name}`);
+          } else if (entry.name.endsWith('.md')) {
+            const zipPath = `${prefix}/${entry.name}`;
+            archive.file(fullPath, { name: zipPath });
+            addedSummaries.add(zipPath.toLowerCase());
+          }
+        }
+      };
+      scanDir(SUMMARIES_DIR);
     }
 
-    // Include database summaries if not already added
-    const dbSummaries = db.prepare(`
-      SELECT s.*, c.name as category_name, c.description as category_desc 
-      FROM archive_summaries s
-      LEFT JOIN categories c ON s.category_id = c.id
-      WHERE s.is_deleted = 0
-    `).all();
-
-    for (const s of dbSummaries) {
-      if (s.summary_type === 'global' && !addedSummaries.has('global_archive_digest.md')) {
-        const globalContent = `---
-type: "global_digest"
-updated: "${s.updated_at || s.created_at}"
-source: "Personal AI Archive"
+    // Include database digests if not already added
+    const dbDigests = db.prepare(`SELECT * FROM archive_digests WHERE is_deleted = 0`).all();
+    for (const d of dbDigests) {
+      const folder = d.corpus_type === 'obsidian_notes' ? 'Summaries/Obsidian_Notes' : 'Summaries/AI_Conversations';
+      const safeName = d.title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50) + '.md';
+      const zipPath = `${folder}/${safeName}`;
+      if (!addedSummaries.has(zipPath.toLowerCase())) {
+        const entJson = (() => { try { return JSON.parse(d.entities_json || '[]'); } catch (_) { return []; } })();
+        const refJson = (() => { try { return JSON.parse(d.references_json || '[]'); } catch (_) { return []; } })();
+        const entMd = entJson.map(e => `\`${e}\``).join(' ');
+        const refMd = refJson.map(r => `- [[${r.title || r.rel_path}]](id:${r.id || r.rel_path})`).join('\n');
+        const content = `---
+title: "${d.title.replace(/"/g, '\\"')}"
+corpus: "${d.corpus_type}"
+updated: "${d.updated_at || d.created_at}"
 ---
 
-# Global Executive Archive Digest
+# ${d.title}
 
-${s.summary_text}
+${d.summary_text}
+
+### 🏷️ Indexed Entities
+${entMd}
+
+### 🔗 Provenance References
+${refMd}
 `;
-        archive.append(globalContent, { name: 'Summaries/Global_Archive_Digest.md' });
-        addedSummaries.add('global_archive_digest.md');
-      } else if (s.category_name) {
-        const safeName = s.category_name.replace(/[^a-zA-Z0-9_-]/g, '_') + '.md';
-        if (!addedSummaries.has(safeName.toLowerCase())) {
-          const catContent = `---
-category: "${s.category_name}"
-updated: "${s.updated_at || s.created_at}"
-coverage_start: "${s.coverage_start || ''}"
-coverage_end: "${s.coverage_end || ''}"
-source: "Personal AI Archive"
----
-
-# ${s.category_name}
-
-${s.category_desc ? `*${s.category_desc}*\n\n` : ''}## Summary & Decisions
-${s.summary_text}
-`;
-          archive.append(catContent, { name: `Summaries/${safeName}` });
-          addedSummaries.add(safeName.toLowerCase());
-        }
+        archive.append(content, { name: zipPath });
+        addedSummaries.add(zipPath.toLowerCase());
       }
     }
 

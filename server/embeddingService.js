@@ -111,10 +111,24 @@ class EmbeddingService {
     this.triggerProcessing();
   }
 
+  // Queue an archive digest for background embedding
+  queueDigest(digestId, digestText) {
+    if (!digestId || !digestText) return;
+    this.queue.push({ type: 'digest', id: digestId, text: digestText });
+    this.triggerProcessing();
+  }
+
   // Queue an Obsidian note for background embedding
   queueObsidianNote(noteId, noteText) {
     if (!noteId || !noteText) return;
     this.queue.push({ type: 'obsidian_note', id: noteId, text: noteText });
+    this.triggerProcessing();
+  }
+
+  // Queue an atomic note chunk for background embedding
+  queueChunk(chunkId, chunkText) {
+    if (!chunkId || !chunkText) return;
+    this.queue.push({ type: 'chunk', id: chunkId, text: chunkText });
     this.triggerProcessing();
   }
 
@@ -154,11 +168,23 @@ class EmbeddingService {
                 VALUES (?, ?, ?)
                 ON CONFLICT(summary_id) DO UPDATE SET embedding = excluded.embedding, model = excluded.model
               `).run(item.id, buffer, model);
+            } else if (item.type === 'digest') {
+              db.prepare(`
+                INSERT INTO digest_embeddings (digest_id, embedding, model)
+                VALUES (?, ?, ?)
+                ON CONFLICT(digest_id) DO UPDATE SET embedding = excluded.embedding, model = excluded.model
+              `).run(item.id, buffer, model);
             } else if (item.type === 'obsidian_note') {
               db.prepare(`
                 INSERT INTO obsidian_note_embeddings (note_id, embedding, model)
                 VALUES (?, ?, ?)
                 ON CONFLICT(note_id) DO UPDATE SET embedding = excluded.embedding, model = excluded.model
+              `).run(item.id, buffer, model);
+            } else if (item.type === 'chunk') {
+              db.prepare(`
+                INSERT INTO obsidian_chunk_embeddings (chunk_id, embedding, model)
+                VALUES (?, ?, ?)
+                ON CONFLICT(chunk_id) DO UPDATE SET embedding = excluded.embedding, model = excluded.model
               `).run(item.id, buffer, model);
             }
           }
@@ -174,7 +200,7 @@ class EmbeddingService {
     }
   }
 
-  // Backfill un-embedded messages, summaries, and obsidian notes in background
+  // Backfill un-embedded messages, digests, obsidian notes, and chunks in background
   async backfillBatch(batchSize = 50) {
     const { enabled } = this.getEmbeddingConfig();
     if (!enabled) return { queued: 0 };
@@ -192,16 +218,31 @@ class EmbeddingService {
       this.queueMessage(msg.id, msg.content);
     }
 
-    const unEmbeddedSummaries = db.prepare(`
-      SELECT s.id, s.summary_text
-      FROM archive_summaries s
-      LEFT JOIN summary_embeddings se ON s.id = se.summary_id
-      WHERE s.is_deleted = 0 AND se.summary_id IS NULL AND length(trim(s.summary_text)) > 0
+    const unEmbeddedDigests = db.prepare(`
+      SELECT d.id, d.title, d.summary_text, d.entities_json
+      FROM archive_digests d
+      LEFT JOIN digest_embeddings de ON d.id = de.digest_id
+      WHERE d.is_deleted = 0 AND de.digest_id IS NULL AND length(trim(d.summary_text)) > 0
       LIMIT 20
     `).all();
 
-    for (const sum of unEmbeddedSummaries) {
-      this.queueSummary(sum.id, sum.summary_text);
+    for (const dig of unEmbeddedDigests) {
+      const text = `${dig.title}\n\n${dig.summary_text}\n\n${dig.entities_json || ''}`.slice(0, 4000);
+      this.queueDigest(dig.id, text);
+    }
+
+    const unEmbeddedChunks = db.prepare(`
+      SELECT c.id, c.heading, c.content, n.title
+      FROM obsidian_chunks c
+      JOIN obsidian_notes n ON c.note_id = n.id
+      LEFT JOIN obsidian_chunk_embeddings ce ON c.id = ce.chunk_id
+      WHERE ce.chunk_id IS NULL AND length(trim(c.content)) > 0
+      LIMIT ?
+    `).all(batchSize);
+
+    for (const ch of unEmbeddedChunks) {
+      const textToEmbed = `${ch.title} ${ch.heading ? `(${ch.heading})` : ''}\n\n${ch.content}`.slice(0, 3500);
+      this.queueChunk(ch.id, textToEmbed);
     }
 
     const unEmbeddedNotes = db.prepare(`
@@ -217,26 +258,34 @@ class EmbeddingService {
       this.queueObsidianNote(note.id, textToEmbed);
     }
 
-    return { queued: unEmbeddedMessages.length + unEmbeddedSummaries.length + unEmbeddedNotes.length };
+    return { 
+      queued: unEmbeddedMessages.length + unEmbeddedDigests.length + unEmbeddedChunks.length + unEmbeddedNotes.length 
+    };
   }
 
   getStatus() {
     const totalMessages = db.prepare('SELECT COUNT(*) as count FROM messages WHERE is_deleted = 0').get()?.count || 0;
     const embeddedMessages = db.prepare('SELECT COUNT(*) as count FROM message_embeddings').get()?.count || 0;
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM archive_summaries WHERE is_deleted = 0').get()?.count || 0;
-    const embeddedSummaries = db.prepare('SELECT COUNT(*) as count FROM summary_embeddings').get()?.count || 0;
+    const totalDigests = db.prepare('SELECT COUNT(*) as count FROM archive_digests WHERE is_deleted = 0').get()?.count || 0;
+    const embeddedDigests = db.prepare('SELECT COUNT(*) as count FROM digest_embeddings').get()?.count || 0;
     const totalObsidianNotes = db.prepare('SELECT COUNT(*) as count FROM obsidian_notes').get()?.count || 0;
     const embeddedObsidianNotes = db.prepare('SELECT COUNT(*) as count FROM obsidian_note_embeddings').get()?.count || 0;
+    const totalChunks = db.prepare('SELECT COUNT(*) as count FROM obsidian_chunks').get()?.count || 0;
+    const embeddedChunks = db.prepare('SELECT COUNT(*) as count FROM obsidian_chunk_embeddings').get()?.count || 0;
+    const totalEntities = db.prepare('SELECT COUNT(*) as count FROM archive_entities').get()?.count || 0;
     const conf = this.getEmbeddingConfig();
 
     return {
       config: conf,
       totalMessages,
       embeddedMessages,
-      totalSummaries,
-      embeddedSummaries,
+      totalDigests,
+      embeddedDigests,
       totalObsidianNotes,
       embeddedObsidianNotes,
+      totalChunks,
+      embeddedChunks,
+      totalEntities,
       queueLength: this.queue.length,
       isProcessing: this.isProcessing
     };

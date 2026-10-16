@@ -658,7 +658,9 @@ Include a reference link back to ${url}`;
     return {
       summary: response.text || 'Unable to generate summary for this link.',
       url,
-      title: pageTitle || url
+      title: pageTitle || url,
+      provider: 'gemini',
+      model: geminiModel
     };
   }
 }

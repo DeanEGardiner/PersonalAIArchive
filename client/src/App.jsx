@@ -83,13 +83,53 @@ export default function App() {
       setCurrentConversation(convData);
       setMessages(convData.messages || []);
       if (!keepCurrentModel) {
-        const targetProvider = convData.default_provider || convData.provider;
-        const targetModel = convData.default_model || convData.model;
+        let targetProvider = convData.default_provider || convData.provider;
+        let targetModel = convData.default_model || convData.model;
+
+        // If conversation has messages, lock strictly to the anchor provider/model of the conversation
+        if (convData.messages && convData.messages.length > 0) {
+          const nonSystem = convData.messages.filter(m => m.provider && m.provider !== 'system');
+          const userMsgs = nonSystem.filter(m => m.role === 'user');
+          const anchorMsg = userMsgs.length > 0 ? userMsgs[0] : nonSystem[0];
+          if (anchorMsg) {
+            targetProvider = anchorMsg.provider;
+            targetModel = anchorMsg.model;
+          }
+        }
+
         if (targetProvider) setSelectedProvider(targetProvider);
         if (targetModel) setSelectedModel(targetModel);
       }
     } catch (err) {
       console.error('Failed to load conversation details:', err);
+    }
+  };
+
+  const handleModelChange = async (newProv, newModel) => {
+    if (newProv) setSelectedProvider(newProv);
+    if (newModel) setSelectedModel(newModel);
+
+    if (activeConvId) {
+      try {
+        await api.updateConversation(activeConvId, {
+          provider: newProv || selectedProvider,
+          model: newModel || selectedModel
+        });
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === activeConvId
+              ? { ...c, default_provider: newProv || c.default_provider, default_model: newModel || c.default_model }
+              : c
+          )
+        );
+        setCurrentConversation((prev) =>
+          prev && prev.id === activeConvId
+            ? { ...prev, default_provider: newProv || prev.default_provider, default_model: newModel || prev.default_model }
+            : prev
+        );
+      } catch (err) {
+        console.error('Failed to update conversation model:', err);
+      }
     }
   };
 
@@ -306,8 +346,8 @@ export default function App() {
         conversationId: convId,
         role: 'assistant',
         content: assistantContent,
-        provider: selectedProvider,
-        model: selectedModel
+        provider: res.provider || 'gemini',
+        model: res.model || selectedModel
       });
 
       setMessages((prev) => prev.map((m) => (m.id === tempAssistantId ? assistantMsg : m)));
@@ -325,6 +365,18 @@ export default function App() {
         }
       ]);
     }
+  };
+
+  const [targetObsidianNoteId, setTargetObsidianNoteId] = useState(null);
+
+  const handleNavigateToConversation = (convId) => {
+    selectConversation(convId);
+    setCurrentView('chat');
+  };
+
+  const handleNavigateToObsidianNote = (noteId) => {
+    setTargetObsidianNoteId(noteId);
+    setCurrentView('obsidian');
   };
 
   return (
@@ -360,6 +412,7 @@ export default function App() {
             setExternalInputText={setExternalInputText}
             onSummarizeUrl={handleSummarizeUrlToThread}
             onSubmitPost={handleCreatePost}
+            onModelChange={handleModelChange}
             isSubmitting={isSubmittingPost}
           />
         )}
@@ -377,14 +430,17 @@ export default function App() {
         {currentView === 'summary' && (
           <SummaryView 
             summaries={summaries}
-            categories={categories}
             onRefreshSummaries={loadSummaries}
             providerHealth={providerHealth}
+            onNavigateToConversation={handleNavigateToConversation}
+            onNavigateToNote={handleNavigateToObsidianNote}
           />
         )}
 
         {currentView === 'obsidian' && (
           <ObsidianNotesView 
+            initialSelectedNoteId={targetObsidianNoteId}
+            onClearInitialNote={() => setTargetObsidianNoteId(null)}
             onInsertIntoComposer={handleInsertIntoComposer}
             onStartChatWithNote={handleStartChatWithNote}
           />

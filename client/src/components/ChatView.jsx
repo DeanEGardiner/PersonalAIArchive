@@ -29,6 +29,7 @@ export default function ChatView({
   setExternalInputText,
   onSummarizeUrl,
   onSubmitPost,
+  onModelChange,
   isSubmitting = false
 }) {
   const [inputText, setInputText] = useState('');
@@ -106,14 +107,19 @@ export default function ChatView({
     if (onSubmitPost) {
       const text = inputText.trim();
       const img = attachedImage;
+      const currentMode = postMode;
       setInputText('');
       setAttachedImage(null);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
+      // If google_search mode was used for this turn, reset back to standard for subsequent turns
+      if (postMode === 'google_search') {
+        setPostMode('standard');
+      }
       await onSubmitPost({
         content: text,
-        mode: postMode,
+        mode: currentMode,
         attachment: img
       });
     }
@@ -127,10 +133,19 @@ export default function ChatView({
     lmstudio: ['qwen/qwen3.8-27b', 'google/gemma-4-12b']
   };
 
-  // Available models for current provider
-  const availableModels = (providerHealth?.[selectedProvider]?.models?.length > 0) 
+  const isChatModel = (modelName) => {
+    if (!modelName || typeof modelName !== 'string') return false;
+    const lower = modelName.toLowerCase();
+    return !lower.includes('embed') && !lower.includes('bge-') && !lower.includes('e5-');
+  };
+
+  // Available models for current provider (filtered to exclude pure embedding models)
+  const rawModels = ((providerHealth?.[selectedProvider]?.models?.length > 0) 
     ? providerHealth[selectedProvider].models 
-    : (defaultProviderModels[selectedProvider] || []);
+    : (defaultProviderModels[selectedProvider] || [])).filter(isChatModel);
+  const availableModels = (selectedModel && !rawModels.includes(selectedModel))
+    ? [selectedModel, ...rawModels]
+    : rawModels;
 
   // Once a model is used in the conversation, grey out and lock model selection
   const isModelLocked = (messages && messages.length > 0) || isStreaming;
@@ -151,14 +166,19 @@ export default function ChatView({
               className="model-select"
               value={selectedProvider}
               disabled={isModelLocked}
-              title={isModelLocked ? "Provider cannot be changed once a conversation has started" : "Select AI Provider"}
+              title={isModelLocked ? `Provider is locked to ${selectedProvider} for this conversation` : "Select AI Provider"}
               onChange={(e) => {
                 const newProv = e.target.value;
-                setSelectedProvider(newProv);
                 const models = (providerHealth?.[newProv]?.models?.length > 0) 
                   ? providerHealth[newProv].models 
                   : (defaultProviderModels[newProv] || []);
-                if (models.length > 0) setSelectedModel(models[0]);
+                const newModel = models.length > 0 ? models[0] : '';
+                if (onModelChange) {
+                  onModelChange(newProv, newModel);
+                } else {
+                  setSelectedProvider(newProv);
+                  if (newModel) setSelectedModel(newModel);
+                }
               }}
             >
               <option value="gemini">Google Gemini (Cloud)</option>
@@ -172,8 +192,15 @@ export default function ChatView({
               className="model-select"
               value={selectedModel}
               disabled={isModelLocked}
-              title={isModelLocked ? "Model cannot be changed once a conversation has started" : "Select Model"}
-              onChange={(e) => setSelectedModel(e.target.value)}
+              title={isModelLocked ? `Model is locked to ${selectedModel} for this conversation` : "Select Model"}
+              onChange={(e) => {
+                const newModel = e.target.value;
+                if (onModelChange) {
+                  onModelChange(selectedProvider, newModel);
+                } else {
+                  setSelectedModel(newModel);
+                }
+              }}
             >
               {availableModels.length > 0 ? (
                 availableModels.map((m) => (
@@ -197,7 +224,7 @@ export default function ChatView({
                   background: 'rgba(255, 255, 255, 0.04)',
                   border: '1px solid rgba(255, 255, 255, 0.08)'
                 }}
-                title="Model is locked for this conversation to maintain context consistency"
+                title={`Model is locked to ${selectedProvider} (${selectedModel}) for this conversation to maintain context consistency`}
               >
                 <Lock size={11} />
                 <span>Locked</span>
@@ -605,7 +632,7 @@ export default function ChatView({
               }}
             >
               <Globe size={13} color="#4285F4" />
-              3. Google Cloud Search
+              3. Google Search (Gemini)
             </button>
           </div>
 
