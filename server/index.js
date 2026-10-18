@@ -14,6 +14,7 @@ const summarizer = require('./summarizer');
 const obsidianSync = require('./obsidianSync');
 const embeddingService = require('./embeddingService');
 const hybridSearch = require('./hybridSearch');
+const mindmapService = require('./mindmapService');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -718,6 +719,20 @@ app.get('/api/archive/search', async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// Visual Mind Map Graph Endpoint
+// -------------------------------------------------------------
+app.get('/api/visualize/mindmap', async (req, res) => {
+  const { q = '', maxNodes = 45 } = req.query;
+  try {
+    const graph = await mindmapService.buildGraph(q, { maxNodes: parseInt(maxNodes, 10) || 45 });
+    res.json(graph);
+  } catch (err) {
+    console.error('[MindMap Error]:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate mind map graph' });
+  }
+});
+
+// -------------------------------------------------------------
 // Embeddings Management Endpoints
 // -------------------------------------------------------------
 app.get('/api/embeddings/status', (req, res) => {
@@ -1361,18 +1376,10 @@ app.post('/api/obsidian/sync', async (req, res) => {
   }
 });
 
-app.get('/api/obsidian/notes', async (req, res) => {
+app.get('/api/obsidian/notes', (req, res) => {
   try {
-    const { q = '', limit = 100 } = req.query;
-    if (q && q.trim()) {
-      let queryVector = null;
-      try {
-        queryVector = await embeddingService.getVector(q);
-      } catch (_) {}
-      const notes = await hybridSearch.searchObsidianNotes(q, queryVector, parseInt(limit, 10) || 100);
-      return res.json(notes);
-    }
-    const notes = obsidianSync.searchNotes('', parseInt(limit, 10) || 100);
+    const { q = '', limit = 500 } = req.query;
+    const notes = obsidianSync.searchNotes(q, parseInt(limit, 10) || 500);
     res.json(notes);
   } catch (err) {
     res.status(500).json({ error: err.message });

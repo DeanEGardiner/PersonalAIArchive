@@ -554,7 +554,7 @@ export default function SummaryView({
                             key={rIdx}
                             onClick={() => {
                               if (isNote) {
-                                if (onNavigateToNote) onNavigateToNote(ref.id || ref.rel_path);
+                                if (onNavigateToNote) onNavigateToNote(ref.id || ref.rel_path, ref.title || ref.name || '');
                               } else {
                                 if (onNavigateToConversation) onNavigateToConversation(ref.id);
                               }

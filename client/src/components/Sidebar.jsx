@@ -7,7 +7,8 @@ import {
   Trash2, 
   Bot,
   Circle,
-  BookOpen
+  BookOpen,
+  Network
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -46,23 +47,34 @@ export default function Sidebar({
         <button 
           className={`nav-tab ${currentView === 'chat' ? 'active' : ''}`}
           onClick={() => setCurrentView('chat')}
+          title="Chat"
         >
-          <MessageSquarePlus size={15} />
+          <MessageSquarePlus size={14} />
           <span>Chat</span>
         </button>
         <button 
           className={`nav-tab ${currentView === 'archive' ? 'active' : ''}`}
           onClick={() => setCurrentView('archive')}
+          title="Archive"
         >
-          <Archive size={15} />
+          <Archive size={14} />
           <span>Archive</span>
         </button>
         <button 
           className={`nav-tab ${currentView === 'summary' ? 'active' : ''}`}
           onClick={() => setCurrentView('summary')}
+          title="Digest"
         >
-          <Layers size={15} />
+          <Layers size={14} />
           <span>Digest</span>
+        </button>
+        <button 
+          className={`nav-tab ${currentView === 'mindmap' ? 'active' : ''}`}
+          onClick={() => setCurrentView('mindmap')}
+          title="Mind Map"
+        >
+          <Network size={14} />
+          <span>Mind Map</span>
         </button>
       </div>
 

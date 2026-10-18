@@ -4,11 +4,12 @@ import ChatView from './components/ChatView';
 import ArchiveView from './components/ArchiveView';
 import SummaryView from './components/SummaryView';
 import ObsidianNotesView from './components/ObsidianNotesView';
+import MindMapView from './components/MindMapView';
 import SettingsModal from './components/SettingsModal';
 import { api } from './api';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('chat'); // 'chat' | 'archive' | 'summary' | 'obsidian'
+  const [currentView, setCurrentView] = useState('chat'); // 'chat' | 'archive' | 'summary' | 'obsidian' | 'mindmap'
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [externalInputText, setExternalInputText] = useState('');
 
@@ -368,14 +369,16 @@ export default function App() {
   };
 
   const [targetObsidianNoteId, setTargetObsidianNoteId] = useState(null);
+  const [targetObsidianSearchQuery, setTargetObsidianSearchQuery] = useState('');
 
   const handleNavigateToConversation = (convId) => {
     selectConversation(convId);
     setCurrentView('chat');
   };
 
-  const handleNavigateToObsidianNote = (noteId) => {
+  const handleNavigateToObsidianNote = (noteId, noteTitle = '') => {
     setTargetObsidianNoteId(noteId);
+    setTargetObsidianSearchQuery(noteTitle || '');
     setCurrentView('obsidian');
   };
 
@@ -440,9 +443,21 @@ export default function App() {
         {currentView === 'obsidian' && (
           <ObsidianNotesView 
             initialSelectedNoteId={targetObsidianNoteId}
-            onClearInitialNote={() => setTargetObsidianNoteId(null)}
+            initialSearchQuery={targetObsidianSearchQuery}
+            onClearInitialNote={() => {
+              setTargetObsidianNoteId(null);
+              setTargetObsidianSearchQuery('');
+            }}
             onInsertIntoComposer={handleInsertIntoComposer}
             onStartChatWithNote={handleStartChatWithNote}
+          />
+        )}
+
+        {currentView === 'mindmap' && (
+          <MindMapView 
+            onNavigateToNote={handleNavigateToObsidianNote}
+            onNavigateToChatWithContext={handleStartChatWithNote}
+            onNavigateToConversation={handleNavigateToConversation}
           />
         )}
       </main>

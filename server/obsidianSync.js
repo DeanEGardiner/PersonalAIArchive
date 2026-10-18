@@ -363,61 +363,107 @@ ${s.summary_text}
     };
   }
 
-  searchNotes(query, limit = 50) {
+  searchNotes(query, limit = 500) {
     if (!query || !query.trim()) {
       return db.prepare(`
-        SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, created_at, updated_at
+        SELECT id, file_name, rel_path, title, content, substr(content, 1, 200) as preview, mtime_ms, created_at, updated_at
         FROM obsidian_notes
         ORDER BY created_at DESC
         LIMIT ?
       `).all(limit);
     }
 
-    const cleanQuery = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
-    const rawWords = cleanQuery.split(/\s+/).filter(w => w.length > 1);
-    const keywords = rawWords.filter(w => !STOP_WORDS.has(w));
-    const searchTerms = keywords.length > 0 ? keywords : rawWords;
+    const rawQ = query.trim();
+    const lowerQ = rawQ.toLowerCase().replace(/^#/, '');
+    const cleanFts = lowerQ.replace(/[^a-z0-9\s]/g, ' ').trim();
+    const searchTerms = cleanFts.split(/\s+/).filter(w => w.length > 0 && !STOP_WORDS.has(w));
+    const allWords = cleanFts.split(/\s+/).filter(w => w.length > 0);
+    const termsToUse = searchTerms.length > 0 ? searchTerms : allWords;
 
-    if (searchTerms.length === 0) {
-      return [];
-    }
+    const notesMap = new Map();
 
-    let ftsHits = [];
+    // 1. Direct Title & Path Matches (Top Priority)
     try {
-      // 1. Try AND match on meaningful terms first
-      const andExpr = searchTerms.map(w => `${w}*`).join(' AND ');
-      ftsHits = db.prepare(`
-        SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.created_at, n.updated_at
-        FROM obsidian_notes_fts fts
-        JOIN obsidian_notes n ON fts.rowid = n.rowid
-        WHERE obsidian_notes_fts MATCH ?
-        ORDER BY rank
+      const titleMatches = db.prepare(`
+        SELECT id, file_name, rel_path, title, content, substr(content, 1, 250) as preview, mtime_ms, created_at, updated_at
+        FROM obsidian_notes
+        WHERE lower(title) = ? OR lower(file_name) = ?
+           OR lower(title) LIKE ? OR lower(rel_path) LIKE ?
         LIMIT ?
-      `).all(andExpr, limit);
+      `).all(lowerQ, lowerQ + '.md', '%' + lowerQ + '%', '%' + lowerQ + '%', limit);
 
-      // 2. If no hits and multiple terms, fallback to OR on meaningful terms
-      if (ftsHits.length === 0 && searchTerms.length > 1) {
-        const orExpr = searchTerms.map(w => `${w}*`).join(' OR ');
-        ftsHits = db.prepare(`
-          SELECT n.id, n.file_name, n.rel_path, n.title, substr(n.content, 1, 250) as preview, n.mtime_ms, n.created_at, n.updated_at
+      for (const n of titleMatches) {
+        let score = 50;
+        const tLower = (n.title || '').toLowerCase();
+        if (tLower === lowerQ) score = 100;
+        else if (tLower.startsWith(lowerQ)) score = 85;
+        else score = 70;
+        notesMap.set(n.id, { ...n, searchScore: score });
+      }
+    } catch (_) {}
+
+    // 2. Frontmatter Tag and Inline Tag Matches
+    try {
+      const tagPattern1 = `%\ntags:%\n%-${lowerQ}%\n%`;
+      const tagMatches = db.prepare(`
+        SELECT id, file_name, rel_path, title, content, substr(content, 1, 250) as preview, mtime_ms, created_at, updated_at
+        FROM obsidian_notes
+        WHERE lower(content) LIKE ? OR lower(content) LIKE ? OR lower(content) LIKE ?
+        LIMIT ?
+      `).all(`%#${lowerQ}%`, `%tags:%${lowerQ}%`, `%- ${lowerQ}%`, limit);
+
+      for (const n of tagMatches) {
+        if (!notesMap.has(n.id)) {
+          notesMap.set(n.id, { ...n, searchScore: 60 });
+        } else {
+          notesMap.get(n.id).searchScore += 20;
+        }
+      }
+    } catch (_) {}
+
+    // 3. FTS5 Content and Keyword Search
+    if (termsToUse.length > 0) {
+      try {
+        const andExpr = termsToUse.map(w => `${w}*`).join(' AND ');
+        const ftsMatches = db.prepare(`
+          SELECT n.id, n.file_name, n.rel_path, n.title, n.content, substr(n.content, 1, 250) as preview, n.mtime_ms, n.created_at, n.updated_at
           FROM obsidian_notes_fts fts
           JOIN obsidian_notes n ON fts.rowid = n.rowid
           WHERE obsidian_notes_fts MATCH ?
-          ORDER BY rank
           LIMIT ?
-        `).all(orExpr, limit);
-      }
-    } catch (_) {
-      ftsHits = db.prepare(`
-        SELECT id, file_name, rel_path, title, substr(content, 1, 200) as preview, mtime_ms, created_at, updated_at
-        FROM obsidian_notes
-        WHERE title LIKE ? OR content LIKE ?
-        ORDER BY created_at DESC
-        LIMIT ?
-      `).all(`%${cleanQuery}%`, `%${cleanQuery}%`, limit);
+        `).all(andExpr, limit);
+
+        for (const n of ftsMatches) {
+          if (!notesMap.has(n.id)) {
+            notesMap.set(n.id, { ...n, searchScore: 35 });
+          } else {
+            notesMap.get(n.id).searchScore += 10;
+          }
+        }
+      } catch (_) {}
     }
 
-    return ftsHits;
+    // 4. Substring LIKE Fallback
+    if (notesMap.size < limit) {
+      try {
+        const likeMatches = db.prepare(`
+          SELECT id, file_name, rel_path, title, content, substr(content, 1, 250) as preview, mtime_ms, created_at, updated_at
+          FROM obsidian_notes
+          WHERE lower(content) LIKE ?
+          LIMIT ?
+        `).all(`%${lowerQ}%`, limit - notesMap.size);
+
+        for (const n of likeMatches) {
+          if (!notesMap.has(n.id)) {
+            notesMap.set(n.id, { ...n, searchScore: 20 });
+          }
+        }
+      } catch (_) {}
+    }
+
+    const results = Array.from(notesMap.values());
+    results.sort((a, b) => (b.searchScore || 0) - (a.searchScore || 0));
+    return results.slice(0, limit);
   }
 
   chunkNoteContent(content, maxChunkChars = 1500, overlapChars = 200) {
@@ -676,16 +722,37 @@ ${s.summary_text}
     };
   }
 
-  getNoteById(id) {
-    if (!id) return null;
-    const note = db.prepare('SELECT * FROM obsidian_notes WHERE id = ?').get(id);
+  getNoteById(idOrPath) {
+    if (!idOrPath) return null;
+    const clean = String(idOrPath).trim();
+    const cleanId = clean.replace(/^note:/, '');
+
+    // 1. Direct ID match
+    let note = db.prepare('SELECT * FROM obsidian_notes WHERE id = ?').get(cleanId);
     if (note) return note;
 
+    // 2. Relative Path match
+    note = db.prepare('SELECT * FROM obsidian_notes WHERE rel_path = ?').get(clean);
+    if (note) return note;
+    if (clean !== cleanId) {
+      note = db.prepare('SELECT * FROM obsidian_notes WHERE rel_path = ?').get(cleanId);
+      if (note) return note;
+    }
+
+    // 3. File name match
+    note = db.prepare('SELECT * FROM obsidian_notes WHERE file_name = ? OR file_name = ?').get(clean, clean + '.md');
+    if (note) return note;
+
+    // 4. Title match
+    note = db.prepare('SELECT * FROM obsidian_notes WHERE lower(title) = lower(?)').get(clean);
+    if (note) return note;
+
+    // 5. Chunk Note match
     const chunkNote = db.prepare(`
       SELECT n.* FROM obsidian_notes n
       JOIN obsidian_chunks c ON c.note_id = n.id
       WHERE c.id = ?
-    `).get(id);
+    `).get(cleanId);
     return chunkNote || null;
   }
 

@@ -10,53 +10,77 @@ import {
   ArrowRight, 
   CheckCircle2,
   MessageSquarePlus,
-  Send
+  Send,
+  X
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
 
-export default function ObsidianNotesView({ initialSelectedNoteId, onClearInitialNote, onInsertIntoComposer, onStartChatWithNote }) {
+export default function ObsidianNotesView({
+  initialSelectedNoteId,
+  initialSearchQuery = '',
+  onClearInitialNote,
+  onInsertIntoComposer,
+  onStartChatWithNote
+}) {
   const [notes, setNotes] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery || '');
   const [status, setStatus] = useState(null);
   const [selectedNote, setSelectedNote] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncToast, setSyncToast] = useState(null);
 
   const searchTimerRef = useRef(null);
+  const lastHandledRef = useRef(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  useEffect(() => {
-    if (initialSelectedNoteId && notes.length > 0) {
-      const match = notes.find(n => n.id === initialSelectedNoteId || n.rel_path === initialSelectedNoteId || n.file_name === initialSelectedNoteId);
-      if (match) {
-        setSelectedNote(match);
-        if (onClearInitialNote) onClearInitialNote();
-      }
-    }
-  }, [initialSelectedNoteId, notes, onClearInitialNote]);
-
-  const loadData = async () => {
+  const loadData = async (query = '', targetNoteId = null) => {
     setIsLoading(true);
     try {
-      const [statusRes, notesRes] = await Promise.all([
+      const idToFetch = targetNoteId || initialSelectedNoteId;
+      const [statusRes, notesRes, directNote] = await Promise.all([
         api.getObsidianStatus().catch(() => null),
-        api.getObsidianNotes('').catch(() => [])
+        api.getObsidianNotes(query).catch(() => []),
+        idToFetch ? api.getObsidianNoteById(idToFetch).catch(() => null) : Promise.resolve(null)
       ]);
       setStatus(statusRes);
-      setNotes(notesRes);
-      if (notesRes.length > 0) {
-        if (initialSelectedNoteId) {
-          const match = notesRes.find(n => n.id === initialSelectedNoteId || n.rel_path === initialSelectedNoteId || n.file_name === initialSelectedNoteId);
-          setSelectedNote(match || notesRes[0]);
-          if (match && onClearInitialNote) onClearInitialNote();
-        } else if (!selectedNote) {
-          setSelectedNote(notesRes[0]);
+
+      let finalNotes = notesRes || [];
+      if (directNote && !finalNotes.some(n => n.id === directNote.id)) {
+        finalNotes = [directNote, ...finalNotes];
+      }
+      setNotes(finalNotes);
+
+      // Determine selected note
+      let chosen = directNote;
+      if (!chosen && idToFetch && finalNotes.length > 0) {
+        const cleanId = String(idToFetch).replace(/^note:/, '').toLowerCase();
+        chosen = finalNotes.find(n => 
+          n.id === cleanId || 
+          n.id === idToFetch || 
+          n.rel_path === idToFetch || 
+          n.file_name === idToFetch ||
+          (n.title && n.title.toLowerCase() === cleanId)
+        );
+      }
+
+      if (!chosen && finalNotes.length > 0) {
+        chosen = (!selectedNote || !finalNotes.some(n => n.id === selectedNote.id)) ? finalNotes[0] : selectedNote;
+      }
+
+      if (chosen) {
+        setSelectedNote(chosen);
+        if (!chosen.content) {
+          api.getObsidianNoteById(chosen.id).then(full => {
+            if (full && full.content) {
+              setSelectedNote(full);
+              setNotes(prev => prev.map(item => item.id === full.id ? full : item));
+            }
+          }).catch(() => {});
         }
+      } else {
+        setSelectedNote(null);
       }
     } catch (err) {
       console.error('Failed to load Obsidian notes:', err);
@@ -65,18 +89,68 @@ export default function ObsidianNotesView({ initialSelectedNoteId, onClearInitia
     }
   };
 
+  // Trigger when a note navigation request arrives
+  useEffect(() => {
+    if (initialSelectedNoteId) {
+      if (lastHandledRef.current === initialSelectedNoteId) return;
+      lastHandledRef.current = initialSelectedNoteId;
+      const q = initialSearchQuery || '';
+      setSearchQuery(q);
+      loadData(q, initialSelectedNoteId);
+      if (onClearInitialNote) {
+        onClearInitialNote();
+      }
+    }
+  }, [initialSelectedNoteId, initialSearchQuery]);
+
+  // Initial load if no specific note was requested on mount
+  useEffect(() => {
+    if (!initialSelectedNoteId) {
+      loadData('');
+    }
+  }, []);
+
+  const executeSearch = async (q) => {
+    setIsSearching(true);
+    try {
+      const notesRes = await api.getObsidianNotes(q);
+      setNotes(notesRes || []);
+      if (notesRes && notesRes.length > 0) {
+        if (!selectedNote || !notesRes.some(n => n.id === selectedNote.id)) {
+          const target = notesRes[0];
+          setSelectedNote(target);
+          if (!target.content) {
+            api.getObsidianNoteById(target.id).then(full => {
+              if (full && full.content) {
+                setSelectedNote(full);
+                setNotes(prev => prev.map(item => item.id === full.id ? full : item));
+              }
+            }).catch(() => {});
+          }
+        }
+      } else {
+        setSelectedNote(null);
+      }
+    } catch (err) {
+      console.error('Search notes failed:', err);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
   const handleSearch = (e) => {
     const q = e.target.value;
     setSearchQuery(q);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(async () => {
-      try {
-        const notesRes = await api.getObsidianNotes(q);
-        setNotes(notesRes);
-      } catch (err) {
-        console.error('Search notes failed:', err);
-      }
-    }, 250);
+    searchTimerRef.current = setTimeout(() => {
+      executeSearch(q);
+    }, 180);
+  };
+
+  const handleClearSearch = () => {
+    setSearchQuery('');
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    executeSearch('');
   };
 
   const handleSync = async () => {
@@ -102,12 +176,19 @@ export default function ObsidianNotesView({ initialSelectedNoteId, onClearInitia
   };
 
   const handleSelectNote = async (n) => {
+    if (!n) return;
+    if (n.content) {
+      setSelectedNote(n);
+      return;
+    }
+    setSelectedNote(n);
     try {
       const fullNote = await api.getObsidianNoteById(n.id);
-      setSelectedNote(fullNote || n);
-    } catch (_) {
-      setSelectedNote(n);
-    }
+      if (fullNote && fullNote.content) {
+        setSelectedNote(fullNote);
+        setNotes((prev) => prev.map((item) => (item.id === n.id ? { ...item, content: fullNote.content } : item)));
+      }
+    } catch (_) {}
   };
 
   return (
@@ -187,15 +268,41 @@ export default function ObsidianNotesView({ initialSelectedNoteId, onClearInitia
           {/* Search Box */}
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '8px 12px' }}>
-              <Search size={16} color="var(--text-muted)" />
+              {isSearching ? (
+                <RefreshCw size={16} className="animate-spin" color="var(--accent-primary)" />
+              ) : (
+                <Search size={16} color="var(--text-muted)" />
+              )}
               <input 
                 type="text"
-                placeholder="Search notes in DeanGVault..."
+                placeholder="Search notes, tags, or content..."
                 value={searchQuery}
                 onChange={handleSearch}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                    executeSearch(searchQuery);
+                  }
+                }}
                 style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: '13px', outline: 'none', width: '100%' }}
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={handleClearSearch}
+                  title="Clear search"
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '2px' }}
+                >
+                  <X size={15} />
+                </button>
+              )}
             </div>
+            {searchQuery && (
+              <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span>Found <strong>{notes.length}</strong> matching notes</span>
+                <span style={{ color: 'var(--accent-primary)', cursor: 'pointer' }} onClick={handleClearSearch}>Clear</span>
+              </div>
+            )}
           </div>
 
           {/* Notes List */}

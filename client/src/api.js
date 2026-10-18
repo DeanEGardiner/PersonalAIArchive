@@ -186,6 +186,12 @@ export const api = {
     return request(`/api/archive/timeline?limit=${limit}`);
   },
 
+  // Visualization / Mind Map
+  getMindMap(query = '', maxNodes = 45) {
+    const qStr = query ? `?q=${encodeURIComponent(query)}&maxNodes=${maxNodes}` : `?maxNodes=${maxNodes}`;
+    return request(`/api/visualize/mindmap${qStr}`);
+  },
+
   // Summaries & Search Digests
   getDigests(corpus = 'all') {
     const qs = corpus && corpus !== 'all' ? `?corpus=${encodeURIComponent(corpus)}` : '';
