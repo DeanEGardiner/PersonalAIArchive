@@ -438,6 +438,44 @@ const migrations = [
         }
       }
     }
+  },
+
+  // 10. Document Writer tables (documents + document_versions)
+  () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT 'Untitled Document',
+        content_md TEXT NOT NULL DEFAULT '',
+        obsidian_rel_path TEXT,
+        obsidian_checksum TEXT,
+        current_version_id TEXT,
+        ai_highlights_json TEXT,
+        word_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_documents_updated ON documents(is_deleted, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_documents_obsidian_path ON documents(obsidian_rel_path);
+
+      CREATE TABLE IF NOT EXISTS document_versions (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        version_number INTEGER NOT NULL,
+        label TEXT,
+        content_md TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        author_type TEXT DEFAULT 'user',
+        provider TEXT,
+        model TEXT,
+        prompt_used TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_doc_versions_doc ON document_versions(document_id, version_number DESC);
+    `);
   }
 ];
 

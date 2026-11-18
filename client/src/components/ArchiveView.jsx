@@ -10,13 +10,14 @@ import {
   ExternalLink,
   Filter,
   RefreshCw,
-  Upload
+  Upload,
+  FileEdit
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
 import RestoreModal from './RestoreModal';
 
-export default function ArchiveView({ conversations, onSelectConversation, setCurrentView, onSummarizeUrl, onRestoreComplete }) {
+export default function ArchiveView({ conversations, onSelectConversation, setCurrentView, onSummarizeUrl, onRestoreComplete, onOpenInWriter }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -196,6 +197,25 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
                       <span className="archive-card-meta">
                         {new Date(res.timestamp).toLocaleString()} • {isObsidian ? (res.rel_path || 'VAULT NOTE') : res.role?.toUpperCase()}
                       </span>
+                      {onOpenInWriter && res.content && (
+                        <button
+                          type="button"
+                          className="btn-send-to-writer"
+                          title="Open in Document Writer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenInWriter({
+                              title: res.conversation_title || res.title || 'Archive Excerpt',
+                              contentMd: res.content,
+                              obsidianRelPath: isObsidian ? res.rel_path : null,
+                              mode: 'new'
+                            });
+                          }}
+                        >
+                          <FileEdit size={11} />
+                          <span>Open in Writer</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="archive-card-content">

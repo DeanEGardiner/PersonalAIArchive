@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { db } = require('./db');
 const config = require('./config');
 const embeddingService = require('./embeddingService');
+const documentService = require('./documentService');
 
 const STOP_WORDS = new Set([
   'the', 'and', 'or', 'to', 'in', 'a', 'an', 'is', 'it', 'you', 'that', 'he',
@@ -346,6 +347,9 @@ ${s.summary_text}
       }
     }
 
+    // 2c. Sync Document Writer Markdown files (<Vault>/AI Archive/Documents/)
+    const docSyncStats = this.syncDocuments(vaultPath, aiArchiveDir);
+
     const durationMs = Date.now() - t0;
     const nowIso = new Date().toISOString();
     config.setSetting('obsidian_last_sync', nowIso);
@@ -358,9 +362,120 @@ ${s.summary_text}
       updatedCount,
       deletedCount,
       exportedCount,
+      documents: docSyncStats,
       durationMs,
       lastSync: nowIso
     };
+  }
+
+  /**
+   * Bidirectional conflict-safe sync for Document Writer Markdown files.
+   */
+  syncDocuments(vaultPath, aiArchiveDir) {
+    const docsDir = path.join(aiArchiveDir || path.join(vaultPath, 'AI Archive'), 'Documents');
+    fs.mkdirSync(docsDir, { recursive: true });
+
+    let docsImported = 0;
+    let docsUpdated = 0;
+    let docsExported = 0;
+
+    const activeDocs = db.prepare('SELECT * FROM documents WHERE is_deleted = 0').all();
+    const trackedPaths = new Set();
+
+    for (const doc of activeDocs) {
+      try {
+        const relPath = documentService.resolveDefaultRelPath(doc);
+        const targetPath = documentService.safeResolveInVault(vaultPath, relPath);
+        trackedPaths.add(path.resolve(targetPath));
+
+        const dbContent = doc.content_md || '';
+        const dbChecksum = documentService.computeChecksum(dbContent);
+
+        if (fs.existsSync(targetPath)) {
+          const diskContent = fs.readFileSync(targetPath, 'utf8');
+          const diskChecksum = documentService.computeChecksum(diskContent);
+          const stat = fs.statSync(targetPath);
+
+          if (diskChecksum === dbChecksum) {
+            if (doc.obsidian_checksum !== diskChecksum || doc.obsidian_rel_path !== relPath) {
+              db.prepare('UPDATE documents SET obsidian_rel_path = ?, obsidian_checksum = ? WHERE id = ?')
+                .run(relPath, diskChecksum, doc.id);
+            }
+            continue;
+          }
+
+          const dbUpdatedMs = doc.updated_at ? new Date(doc.updated_at).getTime() : 0;
+          const diskNewerThanLastSync = doc.obsidian_checksum && diskChecksum !== doc.obsidian_checksum;
+          const dbChangedSinceLastSync = doc.obsidian_checksum && dbChecksum !== doc.obsidian_checksum;
+
+          if (diskNewerThanLastSync && (!dbChangedSinceLastSync || stat.mtimeMs > dbUpdatedMs)) {
+            // Disk wins: snapshot current DB draft first so nothing is lost
+            if (dbChangedSinceLastSync) {
+              documentService.saveVersion(doc.id, {
+                label: 'Auto-backup before Obsidian sync overwrite',
+                authorType: 'auto'
+              });
+            }
+            const title = this.extractTitle(diskContent, path.basename(targetPath)) || doc.title;
+            const now = new Date().toISOString();
+            db.prepare(`
+              UPDATE documents
+              SET title = ?, content_md = ?, obsidian_rel_path = ?, obsidian_checksum = ?, word_count = ?, updated_at = ?
+              WHERE id = ?
+            `).run(title, diskContent, relPath, diskChecksum, documentService.countWords(diskContent), now, doc.id);
+
+            documentService.saveVersion(doc.id, {
+              label: 'Synced from Obsidian',
+              authorType: 'obsidian_sync'
+            });
+            docsUpdated++;
+          } else {
+            // DB wins: write DB content to disk
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.writeFileSync(targetPath, dbContent, 'utf8');
+            db.prepare('UPDATE documents SET obsidian_rel_path = ?, obsidian_checksum = ? WHERE id = ?')
+              .run(relPath, dbChecksum, doc.id);
+            docsExported++;
+          }
+        } else {
+          // Export new document to disk
+          fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+          fs.writeFileSync(targetPath, dbContent, 'utf8');
+          db.prepare('UPDATE documents SET obsidian_rel_path = ?, obsidian_checksum = ? WHERE id = ?')
+            .run(relPath, dbChecksum, doc.id);
+          docsExported++;
+        }
+      } catch (err) {
+        console.warn(`[ObsidianSync] Failed syncing document ${doc.id}:`, err.message);
+      }
+    }
+
+    // Import untracked .md files placed directly into <Vault>/AI Archive/Documents/
+    try {
+      const entries = fs.readdirSync(docsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.md') || entry.name.startsWith('.')) continue;
+        const fullPath = path.resolve(path.join(docsDir, entry.name));
+        if (trackedPaths.has(fullPath)) continue;
+
+        const relPath = path.relative(vaultPath, fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const title = this.extractTitle(content, entry.name);
+        const checksum = documentService.computeChecksum(content);
+        const created = documentService.createDocument({
+          title,
+          contentMd: content,
+          obsidianRelPath: relPath,
+          createInitialVersion: true
+        });
+        db.prepare('UPDATE documents SET obsidian_checksum = ? WHERE id = ?').run(checksum, created.id);
+        docsImported++;
+      }
+    } catch (err) {
+      console.warn('[ObsidianSync] Failed scanning AI Archive/Documents:', err.message);
+    }
+
+    return { docsImported, docsUpdated, docsExported };
   }
 
   searchNotes(query, limit = 500) {

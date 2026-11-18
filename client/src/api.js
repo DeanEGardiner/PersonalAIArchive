@@ -308,5 +308,143 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ batchSize })
     });
+  },
+
+  // Document Writer
+  getDocuments() {
+    return request('/api/documents');
+  },
+
+  createDocument({ title, contentMd, obsidianRelPath, createInitialVersion = true } = {}) {
+    return request('/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, contentMd, obsidianRelPath, createInitialVersion })
+    });
+  },
+
+  getDocument(id) {
+    return request(`/api/documents/${id}`);
+  },
+
+  updateDocument(id, { title, contentMd, aiHighlightsJson, obsidianRelPath, syncToObsidian = false }) {
+    return request(`/api/documents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, contentMd, aiHighlightsJson, obsidianRelPath, syncToObsidian })
+    });
+  },
+
+  deleteDocument(id) {
+    return request(`/api/documents/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  syncDocumentObsidian(id) {
+    return request(`/api/documents/${id}/sync-obsidian`, {
+      method: 'POST'
+    });
+  },
+
+  getDocumentVersions(id) {
+    return request(`/api/documents/${id}/versions`);
+  },
+
+  getDocumentVersion(id, versionId) {
+    return request(`/api/documents/${id}/versions/${versionId}`);
+  },
+
+  saveDocumentVersion(id, { label, authorType = 'user', provider = null, model = null, promptUsed = null } = {}) {
+    return request(`/api/documents/${id}/versions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, authorType, provider, model, promptUsed })
+    });
+  },
+
+  restoreDocumentVersion(id, versionId) {
+    return request(`/api/documents/${id}/versions/${versionId}/restore`, {
+      method: 'POST'
+    });
+  },
+
+  async streamDocumentAI({
+    documentId,
+    action = 'edit',
+    instruction = '',
+    provider,
+    model,
+    fullDocumentMd,
+    selectedTextMd = '',
+    autoSnapshot = true,
+    onInit,
+    onChunk,
+    onError,
+    onDone,
+    abortSignal
+  }) {
+    const response = await fetch(`/api/documents/${documentId}/ai?stream=true`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream'
+      },
+      body: JSON.stringify({
+        action,
+        instruction,
+        provider,
+        model,
+        fullDocumentMd,
+        selectedTextMd,
+        autoSnapshot
+      }),
+      signal: abortSignal
+    });
+
+    if (!response.ok) {
+      let errText = response.statusText;
+      try {
+        const errJson = await response.json();
+        if (errJson?.error) errText = errJson.error;
+      } catch (_) {
+        try { errText = await response.text(); } catch (_) {}
+      }
+      throw new Error(`Document AI error: ${errText || response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6).trim();
+          if (!dataStr) continue;
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.type === 'init') {
+              onInit?.(parsed);
+            } else if (parsed.type === 'chunk') {
+              onChunk?.(parsed.text);
+            } else if (parsed.type === 'error') {
+              onError?.(parsed.error);
+            } else if (parsed.type === 'done') {
+              onDone?.(parsed);
+            }
+          } catch (e) {
+            console.error('Document AI SSE parse error:', e, dataStr);
+          }
+        }
+      }
+    }
   }
 };

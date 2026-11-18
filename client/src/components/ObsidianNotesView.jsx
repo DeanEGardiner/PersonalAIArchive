@@ -11,7 +11,8 @@ import {
   CheckCircle2,
   MessageSquarePlus,
   Send,
-  X
+  X,
+  FileEdit
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
@@ -21,7 +22,8 @@ export default function ObsidianNotesView({
   initialSearchQuery = '',
   onClearInitialNote,
   onInsertIntoComposer,
-  onStartChatWithNote
+  onStartChatWithNote,
+  onOpenInWriter
 }) {
   const [notes, setNotes] = useState([]);
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery || '');
@@ -384,6 +386,22 @@ export default function ObsidianNotesView({
                 </div>
 
                 <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                  {onOpenInWriter && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() => onOpenInWriter({
+                        title: selectedNote.title,
+                        contentMd: selectedNote.content || selectedNote.preview || '',
+                        obsidianRelPath: selectedNote.rel_path,
+                        mode: 'new'
+                      })}
+                      title="Open and edit this Obsidian note in Document Writer"
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 12px' }}
+                    >
+                      <FileEdit size={13} color="#22d3ee" />
+                      <span>Open in Writer</span>
+                    </button>
+                  )}
                   {onInsertIntoComposer && (
                     <button
                       className="btn-secondary"

@@ -9,7 +9,10 @@ import {
   Globe,
   Paperclip,
   X,
-  ExternalLink
+  ExternalLink,
+  FileEdit,
+  Archive,
+  Layers
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
@@ -30,7 +33,10 @@ export default function ChatView({
   onSummarizeUrl,
   onSubmitPost,
   onModelChange,
-  isSubmitting = false
+  isSubmitting = false,
+  onSendToWriter,
+  onOpenArchive,
+  onOpenDigest
 }) {
   const [inputText, setInputText] = useState('');
   const [postMode, setPostMode] = useState('standard'); // 'standard' | 'ai_analysis' | 'google_search'
@@ -233,6 +239,33 @@ export default function ChatView({
           </div>
         </div>
 
+        {(onOpenArchive || onOpenDigest) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {onOpenDigest && (
+              <button
+                type="button"
+                className="writer-action-btn"
+                onClick={onOpenDigest}
+                title="Open Intelligence Digest"
+              >
+                <Layers size={15} />
+                <span>Digest</span>
+              </button>
+            )}
+            {onOpenArchive && (
+              <button
+                type="button"
+                className="writer-action-btn"
+                onClick={onOpenArchive}
+                title="Open Archive Explorer"
+              >
+                <Archive size={15} />
+                <span>Archive</span>
+              </button>
+            )}
+          </div>
+        )}
+
       </div>
 
       {/* Message List */}
@@ -320,6 +353,21 @@ export default function ChatView({
                   )}
                   {m.status === 'error' && (
                     <span style={{ color: 'var(--error)', fontWeight: 600, fontSize: '10px' }}>(Error)</span>
+                  )}
+                  {onSendToWriter && bodyContent && (
+                    <button
+                      type="button"
+                      className="btn-send-to-writer"
+                      title="Send this message to Document Writer"
+                      onClick={() => onSendToWriter({
+                        title: conversation?.title || 'Document from Chat',
+                        contentMd: bodyContent,
+                        mode: 'new'
+                      })}
+                    >
+                      <FileEdit size={11} />
+                      <span>Writer</span>
+                    </button>
                   )}
                 </div>
 

@@ -1,14 +1,13 @@
 import React from 'react';
 import { 
   MessageSquarePlus, 
-  Archive, 
-  Layers, 
   Settings, 
   Trash2, 
   Bot,
   Circle,
   BookOpen,
-  Network
+  Network,
+  FileEdit
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -22,15 +21,17 @@ export default function Sidebar({
   providerHealth,
   onOpenSettings
 }) {
+  const isCollapsed = currentView === 'writer' || currentView === 'mindmap';
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${isCollapsed ? 'sidebar-collapsed' : ''}`}>
       {/* Brand Header */}
       <div className="sidebar-header">
         <div className="logo-group">
-          <div className="logo-icon-wrap">
+          <div className="logo-icon-wrap" title="Personal AI Archive">
             <Bot size={20} />
           </div>
-          <span className="logo-title">Personal AI Archive</span>
+          {!isCollapsed && <span className="logo-title">Personal AI Archive</span>}
         </div>
         <button 
           className="nav-tab" 
@@ -50,23 +51,7 @@ export default function Sidebar({
           title="Chat"
         >
           <MessageSquarePlus size={14} />
-          <span>Chat</span>
-        </button>
-        <button 
-          className={`nav-tab ${currentView === 'archive' ? 'active' : ''}`}
-          onClick={() => setCurrentView('archive')}
-          title="Archive"
-        >
-          <Archive size={14} />
-          <span>Archive</span>
-        </button>
-        <button 
-          className={`nav-tab ${currentView === 'summary' ? 'active' : ''}`}
-          onClick={() => setCurrentView('summary')}
-          title="Digest"
-        >
-          <Layers size={14} />
-          <span>Digest</span>
+          {!isCollapsed && <span>Chat</span>}
         </button>
         <button 
           className={`nav-tab ${currentView === 'mindmap' ? 'active' : ''}`}
@@ -74,11 +59,20 @@ export default function Sidebar({
           title="Mind Map"
         >
           <Network size={14} />
-          <span>Mind Map</span>
+          {!isCollapsed && <span>Mind Map</span>}
+        </button>
+        <button 
+          className={`nav-tab ${currentView === 'writer' ? 'active' : ''}`}
+          onClick={() => setCurrentView('writer')}
+          title="Document Writer"
+        >
+          <FileEdit size={14} />
+          {!isCollapsed && <span>Writer</span>}
         </button>
       </div>
 
       {/* Actions */}
+      {!isCollapsed && (
       <div className="sidebar-actions" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <button className="btn-new-chat" onClick={onNewConversation}>
           <MessageSquarePlus size={16} />
@@ -109,8 +103,10 @@ export default function Sidebar({
           <span>Obsidian Notes</span>
         </button>
       </div>
+      )}
 
       {/* Recent Conversations List */}
+      {!isCollapsed && (
       <div className="conv-list">
         {conversations.length === 0 ? (
           <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
@@ -158,8 +154,10 @@ export default function Sidebar({
           ))
         )}
       </div>
+      )}
 
       {/* Footer Provider Live Status */}
+      {!isCollapsed && (
       <div className="sidebar-footer">
         <div className="health-status-row">
           <span style={{ color: 'var(--text-muted)' }}>Providers</span>
@@ -177,6 +175,7 @@ export default function Sidebar({
           </div>
         </div>
       </div>
+      )}
     </aside>
   );
 }

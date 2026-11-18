@@ -15,6 +15,7 @@ const obsidianSync = require('./obsidianSync');
 const embeddingService = require('./embeddingService');
 const hybridSearch = require('./hybridSearch');
 const mindmapService = require('./mindmapService');
+const documentService = require('./documentService');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -1395,6 +1396,262 @@ app.get('/api/obsidian/notes/:id', (req, res) => {
     res.json(note);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Document Writer Endpoints
+// -------------------------------------------------------------
+app.get('/api/documents', (req, res) => {
+  try {
+    const docs = documentService.listDocuments();
+    res.json(docs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/documents', (req, res) => {
+  try {
+    const { title, contentMd, obsidianRelPath, createInitialVersion = true } = req.body || {};
+    const doc = documentService.createDocument({ title, contentMd, obsidianRelPath, createInitialVersion });
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/documents/:id', (req, res) => {
+  try {
+    const doc = documentService.getDocument(req.params.id);
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    res.json(doc);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/documents/:id', (req, res) => {
+  try {
+    const { title, contentMd, aiHighlightsJson, obsidianRelPath, syncToObsidian = false } = req.body || {};
+    const updated = documentService.updateDocument(req.params.id, {
+      title,
+      contentMd,
+      aiHighlightsJson,
+      obsidianRelPath,
+      syncToObsidian
+    });
+    res.json(updated);
+  } catch (err) {
+    const status = err.message === 'Document not found' ? 404 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.delete('/api/documents/:id', (req, res) => {
+  try {
+    const result = documentService.deleteDocument(req.params.id);
+    res.json(result);
+  } catch (err) {
+    const status = err.message === 'Document not found' ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.post('/api/documents/:id/sync-obsidian', (req, res) => {
+  try {
+    const result = documentService.writeDocumentToVault(req.params.id);
+    res.json(result);
+  } catch (err) {
+    const status = err.message === 'Document not found' ? 404 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get('/api/documents/:id/versions', (req, res) => {
+  try {
+    const versions = documentService.listVersions(req.params.id);
+    res.json(versions);
+  } catch (err) {
+    const status = err.message === 'Document not found' ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get('/api/documents/:id/versions/:versionId', (req, res) => {
+  try {
+    const version = documentService.getVersion(req.params.id, req.params.versionId);
+    if (!version) {
+      return res.status(404).json({ error: 'Version not found' });
+    }
+    res.json(version);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/documents/:id/versions', (req, res) => {
+  try {
+    const { label, authorType = 'user', provider = null, model = null, promptUsed = null } = req.body || {};
+    const version = documentService.saveVersion(req.params.id, {
+      label,
+      authorType,
+      provider,
+      model,
+      promptUsed
+    });
+    res.status(201).json(version);
+  } catch (err) {
+    const status = err.message === 'Document not found' ? 404 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.post('/api/documents/:id/versions/:versionId/restore', (req, res) => {
+  try {
+    const restored = documentService.restoreVersion(req.params.id, req.params.versionId);
+    res.json(restored);
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.post('/api/documents/:id/ai', async (req, res) => {
+  const doc = documentService.getDocument(req.params.id);
+  if (!doc) {
+    return res.status(404).json({ error: 'Document not found' });
+  }
+
+  const {
+    action = 'edit',
+    instruction = '',
+    provider = config.DEFAULT_PROVIDER,
+    model,
+    fullDocumentMd,
+    selectedTextMd = '',
+    autoSnapshot = true
+  } = req.body || {};
+
+  const targetProvider = provider || config.DEFAULT_PROVIDER;
+  const targetModel = config.resolveModel(targetProvider, model);
+  const currentDocMd = typeof fullDocumentMd === 'string' ? fullDocumentMd : (doc.content_md || '');
+  const hasSelection = typeof selectedTextMd === 'string' && selectedTextMd.trim().length > 0;
+
+  let systemPrompt = '';
+  let userPrompt = '';
+
+  if (action === 'review') {
+    systemPrompt = [
+      'You are an expert editor and document reviewer.',
+      'Review the provided Markdown document (or selected excerpt) and provide clear, actionable feedback in Markdown.',
+      'Cover: 1) Clarity & Structure, 2) Tone & Style, 3) Gaps or Factual Questions, 4) Specific Suggested Improvements.',
+      'Do NOT rewrite the entire document unless asked; focus on constructive review notes.'
+    ].join(' ');
+    userPrompt = `Document Title: ${doc.title}\n\n${hasSelection ? `Selected Excerpt:\n${selectedTextMd}\n\nFull Document Context:\n${currentDocMd}` : `Document Content:\n${currentDocMd}`}\n\nReviewer Focus / Instructions: ${instruction || 'Provide a thorough editorial review.'}`;
+  } else {
+    const actionVerb = action === 'refine' ? 'refine and polish' : (action === 'update' ? 'update' : 'edit');
+    systemPrompt = [
+      `You are an expert Markdown document editor. Your task is to ${actionVerb} the target text according to the user's instructions.`,
+      'Return ONLY the updated Markdown text for the target section (or full document if no selection is specified).',
+      'Do NOT wrap your response in ```markdown code fences, and do NOT include conversational preamble or explanations.',
+      'Preserve valid Markdown formatting (headings, lists, tables, links, bold/italic, code blocks).'
+    ].join(' ');
+
+    if (hasSelection) {
+      userPrompt = `Document Title: ${doc.title}\n\nFull Document Context (for reference only — do not output the whole document):\n${currentDocMd}\n\n--- TARGET SELECTION TO ${actionVerb.toUpperCase()} ---\n${selectedTextMd}\n--- END SELECTION ---\n\nInstruction: ${instruction || `Please ${actionVerb} the selected text.`}`;
+    } else {
+      userPrompt = `Document Title: ${doc.title}\n\n--- DOCUMENT CONTENT ---\n${currentDocMd}\n--- END DOCUMENT ---\n\nInstruction: ${instruction || `Please ${actionVerb} this document.`}`;
+    }
+  }
+
+  // Save a pre-AI safety snapshot for mutating actions if content changed since last version
+  if (action !== 'review' && autoSnapshot) {
+    try {
+      const latest = documentService.listVersions(doc.id)[0];
+      const currentChecksum = documentService.computeChecksum(currentDocMd);
+      if (!latest || latest.checksum !== currentChecksum) {
+        db.prepare('UPDATE documents SET content_md = ? WHERE id = ?').run(currentDocMd, doc.id);
+        documentService.saveVersion(doc.id, {
+          label: `Before AI ${action} (${targetModel})`,
+          authorType: 'auto',
+          provider: targetProvider,
+          model: targetModel,
+          promptUsed: instruction || action
+        });
+      }
+    } catch (snapErr) {
+      console.warn('[Document AI] Pre-AI snapshot skipped:', snapErr.message);
+    }
+  }
+
+  const isStream = req.query.stream === 'true';
+
+  if (!isStream) {
+    try {
+      let fullText = '';
+      await providerRouter.streamChat({
+        provider: targetProvider,
+        model: targetModel,
+        systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+        onChunk: (chunk) => {
+          fullText += chunk;
+        }
+      });
+      return res.json({
+        action,
+        provider: targetProvider,
+        model: targetModel,
+        text: fullText
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  const abortController = new AbortController();
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  res.write(`data: ${JSON.stringify({ type: 'init', documentId: doc.id, action, provider: targetProvider, model: targetModel })}\n\n`);
+
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
+
+  let fullText = '';
+  try {
+    await providerRouter.streamChat({
+      provider: targetProvider,
+      model: targetModel,
+      systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      abortSignal: abortController.signal,
+      onChunk: (chunk) => {
+        fullText += chunk;
+        res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
+      }
+    });
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      documentId: doc.id,
+      action,
+      provider: targetProvider,
+      model: targetModel,
+      text: fullText,
+      status: 'completed'
+    })}\n\n`);
+    return res.end();
+  } catch (err) {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', documentId: doc.id, action, text: fullText, status: abortController.signal.aborted ? 'interrupted' : 'error' })}\n\n`);
+    return res.end();
   }
 });
 

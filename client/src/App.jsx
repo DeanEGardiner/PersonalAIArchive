@@ -5,6 +5,7 @@ import ArchiveView from './components/ArchiveView';
 import SummaryView from './components/SummaryView';
 import ObsidianNotesView from './components/ObsidianNotesView';
 import MindMapView from './components/MindMapView';
+import DocumentWriterView from './components/DocumentWriterView';
 import SettingsModal from './components/SettingsModal';
 import { api } from './api';
 
@@ -370,6 +371,12 @@ export default function App() {
 
   const [targetObsidianNoteId, setTargetObsidianNoteId] = useState(null);
   const [targetObsidianSearchQuery, setTargetObsidianSearchQuery] = useState('');
+  const [writerSeedPayload, setWriterSeedPayload] = useState(null);
+
+  const handleSendToWriter = (payload) => {
+    setWriterSeedPayload(payload);
+    setCurrentView('writer');
+  };
 
   const handleNavigateToConversation = (convId) => {
     selectConversation(convId);
@@ -417,6 +424,9 @@ export default function App() {
             onSubmitPost={handleCreatePost}
             onModelChange={handleModelChange}
             isSubmitting={isSubmittingPost}
+            onSendToWriter={handleSendToWriter}
+            onOpenArchive={() => setCurrentView('archive')}
+            onOpenDigest={() => setCurrentView('summary')}
           />
         )}
 
@@ -427,6 +437,7 @@ export default function App() {
             setCurrentView={setCurrentView}
             onSummarizeUrl={handleSummarizeUrlToThread}
             onRestoreComplete={handleRestoreComplete}
+            onOpenInWriter={handleSendToWriter}
           />
         )}
 
@@ -450,6 +461,7 @@ export default function App() {
             }}
             onInsertIntoComposer={handleInsertIntoComposer}
             onStartChatWithNote={handleStartChatWithNote}
+            onOpenInWriter={handleSendToWriter}
           />
         )}
 
@@ -458,6 +470,16 @@ export default function App() {
             onNavigateToNote={handleNavigateToObsidianNote}
             onNavigateToChatWithContext={handleStartChatWithNote}
             onNavigateToConversation={handleNavigateToConversation}
+          />
+        )}
+
+        {currentView === 'writer' && (
+          <DocumentWriterView 
+            writerSeedPayload={writerSeedPayload}
+            onClearWriterSeed={() => setWriterSeedPayload(null)}
+            providerHealth={providerHealth}
+            defaultProvider={selectedProvider}
+            defaultModel={selectedModel}
           />
         )}
       </main>
