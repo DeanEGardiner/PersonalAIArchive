@@ -77,7 +77,28 @@ function InteractiveHyperlink({ href, title, children, onSummarizeUrl }) {
  * - Code inline: `text` -> <code>
  * - Preserves line breaks and formatting
  */
-export function renderFormattedContent(text, onSummarizeUrl) {
+function highlightTextSegments(text, query, keyPrefix) {
+  if (!query || !query.trim() || typeof text !== 'string') return text;
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const parts = [];
+  let idx = 0;
+  let last = 0;
+  let count = 0;
+  while ((idx = lowerText.indexOf(lowerQuery, last)) !== -1) {
+    if (idx > last) parts.push(text.slice(last, idx));
+    parts.push(
+      <mark key={`${keyPrefix}-hl-${count++}`} className="writer-search-match">
+        {text.slice(idx, idx + query.length)}
+      </mark>
+    );
+    last = idx + query.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length > 0 ? parts : text;
+}
+
+export function renderFormattedContent(text, onSummarizeUrl, highlightQuery = '') {
   if (!text) return null;
 
   const lines = String(text).split('\n');
@@ -85,12 +106,12 @@ export function renderFormattedContent(text, onSummarizeUrl) {
   return lines.map((line, lineIdx) => (
     <React.Fragment key={lineIdx}>
       {lineIdx > 0 && <br />}
-      {parseLineTokens(line, lineIdx, onSummarizeUrl)}
+      {parseLineTokens(line, lineIdx, onSummarizeUrl, highlightQuery)}
     </React.Fragment>
   ));
 }
 
-function parseLineTokens(line, lineKey, onSummarizeUrl) {
+function parseLineTokens(line, lineKey, onSummarizeUrl, highlightQuery = '') {
   if (!line) return null;
 
   // Pattern matches:
@@ -107,7 +128,7 @@ function parseLineTokens(line, lineKey, onSummarizeUrl) {
 
   while ((match = tokenRegex.exec(line)) !== null) {
     if (match.index > lastIndex) {
-      elements.push(line.substring(lastIndex, match.index));
+      elements.push(highlightTextSegments(line.substring(lastIndex, match.index), highlightQuery, `${lineKey}-${tokenCounter++}`));
     }
 
     const [fullMatch, mdLink, mdText, mdUrl, rawUrl, boldWrap, boldText, codeWrap, codeText] = match;
@@ -148,7 +169,7 @@ function parseLineTokens(line, lineKey, onSummarizeUrl) {
     } else if (boldWrap) {
       elements.push(
         <strong key={`${lineKey}-${tokenCounter++}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-          {boldText}
+          {highlightTextSegments(boldText, highlightQuery, `${lineKey}-b-${tokenCounter}`)}
         </strong>
       );
     } else if (codeWrap) {
@@ -163,7 +184,7 @@ function parseLineTokens(line, lineKey, onSummarizeUrl) {
             fontSize: '0.9em'
           }}
         >
-          {codeText}
+          {highlightTextSegments(codeText, highlightQuery, `${lineKey}-c-${tokenCounter}`)}
         </code>
       );
     }
@@ -172,16 +193,16 @@ function parseLineTokens(line, lineKey, onSummarizeUrl) {
   }
 
   if (lastIndex < line.length) {
-    elements.push(line.substring(lastIndex));
+    elements.push(highlightTextSegments(line.substring(lastIndex), highlightQuery, `${lineKey}-end`));
   }
 
   return elements;
 }
 
-export default function FormattedText({ text, className = '', onSummarizeUrl }) {
+export default function FormattedText({ text, className = '', onSummarizeUrl, highlightQuery = '' }) {
   return (
     <span className={className}>
-      {renderFormattedContent(text, onSummarizeUrl)}
+      {renderFormattedContent(text, onSummarizeUrl, highlightQuery)}
     </span>
   );
 }

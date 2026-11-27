@@ -12,7 +12,12 @@ import {
   ExternalLink,
   FileEdit,
   Archive,
-  Layers
+  Layers,
+  Plus,
+  FileText,
+  Search,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
@@ -36,20 +41,144 @@ export default function ChatView({
   isSubmitting = false,
   onSendToWriter,
   onOpenArchive,
-  onOpenDigest
+  onOpenDigest,
+  isActive = true
 }) {
   const [inputText, setInputText] = useState('');
   const [postMode, setPostMode] = useState('standard'); // 'standard' | 'ai_analysis' | 'google_search'
   const [attachedImage, setAttachedImage] = useState(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [writerModalPayload, setWriterModalPayload] = useState(null);
+  const [writerDocs, setWriterDocs] = useState([]);
+  const [isLoadingWriterDocs, setIsLoadingWriterDocs] = useState(false);
+  const [newWriterDocTitle, setNewWriterDocTitle] = useState('');
+  const [showFindBar, setShowFindBar] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findMatchIndex, setFindMatchIndex] = useState(0);
+  const [findMatchCount, setFindMatchCount] = useState(0);
+  const findInputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const scrollPositionsRef = useRef(new Map());
+  const prevConvIdRef = useRef(null);
+  const prevMessageCountRef = useRef(0);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Auto-scroll to bottom of messages
+  // Restore saved scroll position when switching conversations (never force-scroll on tab toggle)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingText, isSubmitting]);
+    if (!messagesContainerRef.current) return;
+    const convId = conversation?.id;
+    if (!convId) return;
+    if (scrollPositionsRef.current.has(convId)) {
+      const savedTop = scrollPositionsRef.current.get(convId);
+      requestAnimationFrame(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTop = savedTop;
+        }
+      });
+    } else {
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      });
+    }
+  }, [conversation?.id]);
+
+  // Auto-scroll to bottom only when actively streaming/submitting or when new messages arrive in the active thread
+  useEffect(() => {
+    const convId = conversation?.id || '__none__';
+    const convChanged = prevConvIdRef.current !== convId;
+    const msgCount = messages?.length || 0;
+    const hasNewMessage = !convChanged && msgCount > prevMessageCountRef.current;
+
+    prevConvIdRef.current = convId;
+    prevMessageCountRef.current = msgCount;
+
+    if (!isActive) return;
+    if (isStreaming || isSubmitting || hasNewMessage) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, streamingText, isSubmitting, isStreaming, isActive, conversation?.id]);
+
+  const handleMessagesScroll = () => {
+    if (!isActive || !messagesContainerRef.current) return;
+    const convId = conversation?.id || '__none__';
+    scrollPositionsRef.current.set(convId, messagesContainerRef.current.scrollTop);
+  };
+
+  // Find in Conversation helpers & Cmd+F shortcut
+  const updateActiveMatchHighlight = (targetIdx, shouldScroll = false) => {
+    if (!messagesContainerRef.current) return;
+    const matches = messagesContainerRef.current.querySelectorAll('.writer-search-match');
+    setFindMatchCount(matches.length);
+    matches.forEach((el) => el.classList.remove('writer-search-match-active'));
+    if (matches.length === 0) {
+      setFindMatchIndex(0);
+      return;
+    }
+    const wrapped = ((targetIdx % matches.length) + matches.length) % matches.length;
+    setFindMatchIndex(wrapped);
+    const activeEl = matches[wrapped];
+    activeEl.classList.add('writer-search-match-active');
+    if (shouldScroll) {
+      activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  useEffect(() => {
+    if (!showFindBar || !findQuery.trim()) {
+      setFindMatchCount(0);
+      setFindMatchIndex(0);
+      if (messagesContainerRef.current) {
+        messagesContainerRef.current
+          .querySelectorAll('.writer-search-match-active')
+          .forEach((el) => el.classList.remove('writer-search-match-active'));
+      }
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      updateActiveMatchHighlight(0, false);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [findQuery, showFindBar, messages, conversation?.id]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setShowFindBar(true);
+        setTimeout(() => {
+          findInputRef.current?.focus();
+          findInputRef.current?.select();
+        }, 0);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive]);
+
+  const handleCloseFindBar = () => {
+    setShowFindBar(false);
+    setFindQuery('');
+    setFindMatchCount(0);
+    setFindMatchIndex(0);
+  };
+
+  const openSendToWriterModal = async (payload) => {
+    setWriterModalPayload(payload);
+    setNewWriterDocTitle(payload.title || 'Document from Chat');
+    setIsLoadingWriterDocs(true);
+    try {
+      const docs = await api.getDocuments();
+      setWriterDocs(docs || []);
+    } catch (err) {
+      console.error('Failed to load documents for writer picker:', err);
+      setWriterDocs([]);
+    } finally {
+      setIsLoadingWriterDocs(false);
+    }
+  };
 
   // Sync external input (e.g. from Obsidian note insertion)
   useEffect(() => {
@@ -239,37 +368,111 @@ export default function ChatView({
           </div>
         </div>
 
-        {(onOpenArchive || onOpenDigest) && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {onOpenDigest && (
-              <button
-                type="button"
-                className="writer-action-btn"
-                onClick={onOpenDigest}
-                title="Open Intelligence Digest"
-              >
-                <Layers size={15} />
-                <span>Digest</span>
-              </button>
-            )}
-            {onOpenArchive && (
-              <button
-                type="button"
-                className="writer-action-btn"
-                onClick={onOpenArchive}
-                title="Open Archive Explorer"
-              >
-                <Archive size={15} />
-                <span>Archive</span>
-              </button>
-            )}
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            type="button"
+            className={`writer-action-btn ${showFindBar ? 'active' : ''}`}
+            onClick={() => {
+              if (showFindBar) {
+                handleCloseFindBar();
+              } else {
+                setShowFindBar(true);
+                setTimeout(() => findInputRef.current?.focus(), 0);
+              }
+            }}
+            title="Find in conversation (Cmd+F)"
+          >
+            <Search size={15} />
+            <span>Find</span>
+          </button>
+          {onOpenDigest && (
+            <button
+              type="button"
+              className="writer-action-btn"
+              onClick={onOpenDigest}
+              title="Open Intelligence Digest"
+            >
+              <Layers size={15} />
+              <span>Digest</span>
+            </button>
+          )}
+          {onOpenArchive && (
+            <button
+              type="button"
+              className="writer-action-btn"
+              onClick={onOpenArchive}
+              title="Open Archive Explorer"
+            >
+              <Archive size={15} />
+              <span>Archive</span>
+            </button>
+          )}
+        </div>
 
       </div>
 
+      {/* Find in Conversation Bar */}
+      {showFindBar && (
+        <div className="writer-find-bar">
+          <Search size={14} color="var(--text-muted)" />
+          <input
+            ref={findInputRef}
+            type="text"
+            className="writer-find-input"
+            value={findQuery}
+            onChange={(e) => setFindQuery(e.target.value)}
+            placeholder="Find word or phrase in conversation..."
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                updateActiveMatchHighlight(e.shiftKey ? findMatchIndex - 1 : findMatchIndex + 1, true);
+              } else if (e.key === 'Escape') {
+                handleCloseFindBar();
+              }
+            }}
+          />
+          <span className="writer-find-count">
+            {findQuery.trim()
+              ? findMatchCount > 0
+                ? `${findMatchIndex + 1} / ${findMatchCount}`
+                : '0 matches'
+              : ''}
+          </span>
+          <button
+            type="button"
+            className="toolbar-btn"
+            disabled={findMatchCount === 0}
+            onClick={() => updateActiveMatchHighlight(findMatchIndex - 1, true)}
+            title="Previous match (Shift+Enter)"
+          >
+            <ChevronUp size={15} />
+          </button>
+          <button
+            type="button"
+            className="toolbar-btn"
+            disabled={findMatchCount === 0}
+            onClick={() => updateActiveMatchHighlight(findMatchIndex + 1, true)}
+            title="Next match (Enter)"
+          >
+            <ChevronDown size={15} />
+          </button>
+          <button
+            type="button"
+            className="toolbar-btn"
+            onClick={handleCloseFindBar}
+            title="Close (Esc)"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       {/* Message List */}
-      <div className="messages-container">
+      <div
+        className="messages-container"
+        ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
+      >
         {messages.length === 0 && !isStreaming && !isSubmitting ? (
           <div className="chat-empty-state">
             <div className="empty-icon-wrap">
@@ -359,10 +562,9 @@ export default function ChatView({
                       type="button"
                       className="btn-send-to-writer"
                       title="Send this message to Document Writer"
-                      onClick={() => onSendToWriter({
+                      onClick={() => openSendToWriterModal({
                         title: conversation?.title || 'Document from Chat',
-                        contentMd: bodyContent,
-                        mode: 'new'
+                        contentMd: bodyContent
                       })}
                     >
                       <FileEdit size={11} />
@@ -387,7 +589,11 @@ export default function ChatView({
                     </div>
                   )}
 
-                  <FormattedText text={bodyContent} onSummarizeUrl={onSummarizeUrl} />
+                  <FormattedText
+                    text={bodyContent}
+                    onSummarizeUrl={onSummarizeUrl}
+                    highlightQuery={showFindBar ? findQuery : ''}
+                  />
 
                   {/* Verified Web Citations Grid */}
                   {sourcesList.length > 0 && (
@@ -739,6 +945,104 @@ export default function ChatView({
         </div>
       </div>
 
+      {/* Send to Document Writer Picker Modal */}
+      {writerModalPayload && (
+        <div className="modal-overlay" onClick={() => setWriterModalPayload(null)}>
+          <div className="writer-picker-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="writer-picker-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '15px' }}>
+                <FileEdit size={17} color="#22d3ee" />
+                <span>Send Message to Document Writer</span>
+              </div>
+              <button
+                type="button"
+                className="writer-clear-btn"
+                onClick={() => setWriterModalPayload(null)}
+                title="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="writer-picker-section">
+              <label className="writer-picker-label">Create a New Document</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  className="writer-version-input"
+                  value={newWriterDocTitle}
+                  onChange={(e) => setNewWriterDocTitle(e.target.value)}
+                  placeholder="New document title..."
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      onSendToWriter({
+                        title: newWriterDocTitle.trim() || 'Document from Chat',
+                        contentMd: writerModalPayload.contentMd,
+                        mode: 'new'
+                      });
+                      setWriterModalPayload(null);
+                    }
+                  }}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  className="writer-new-btn"
+                  onClick={() => {
+                    onSendToWriter({
+                      title: newWriterDocTitle.trim() || 'Document from Chat',
+                      contentMd: writerModalPayload.contentMd,
+                      mode: 'new'
+                    });
+                    setWriterModalPayload(null);
+                  }}
+                >
+                  <Plus size={14} />
+                  <span>Create & Open</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="writer-picker-section">
+              <label className="writer-picker-label">Or Append to an Existing Document</label>
+              <div className="writer-picker-list">
+                {isLoadingWriterDocs ? (
+                  <div className="writer-empty-hint" style={{ padding: '16px' }}>Loading documents...</div>
+                ) : writerDocs.length === 0 ? (
+                  <div className="writer-empty-hint" style={{ padding: '16px' }}>No existing documents yet.</div>
+                ) : (
+                  writerDocs.map((doc) => (
+                    <button
+                      key={doc.id}
+                      type="button"
+                      className="writer-picker-doc-row"
+                      onClick={() => {
+                        onSendToWriter({
+                          targetDocumentId: doc.id,
+                          contentMd: writerModalPayload.contentMd,
+                          mode: 'append'
+                        });
+                        setWriterModalPayload(null);
+                      }}
+                    >
+                      <FileText size={14} color="var(--accent-primary)" />
+                      <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                        <div className="writer-doc-item-title">{doc.title || 'Untitled Document'}</div>
+                        <div className="writer-doc-item-meta">
+                          <span>{doc.word_count || 0} words</span>
+                          <span>•</span>
+                          <span>{new Date(doc.updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+                        </div>
+                      </div>
+                      <span className="writer-picker-append-tag">Append</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

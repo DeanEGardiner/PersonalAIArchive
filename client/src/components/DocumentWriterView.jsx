@@ -46,10 +46,13 @@ import {
   PanelRightOpen,
   PanelRightClose,
   Square,
-  Download
+  Download,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { api } from '../api';
 import AIChangeMark from '../extensions/AIChangeMark';
+import SearchHighlight, { findMatchesInDoc } from '../extensions/SearchHighlight';
 
 function stripOuterCodeFences(text) {
   if (!text) return '';
@@ -96,7 +99,8 @@ export default function DocumentWriterView({
   onClearWriterSeed,
   providerHealth = null,
   defaultProvider = 'gemini',
-  defaultModel = ''
+  defaultModel = '',
+  isActive = true
 }) {
   const [documents, setDocuments] = useState([]);
   const [activeDoc, setActiveDoc] = useState(null);
@@ -144,6 +148,22 @@ export default function DocumentWriterView({
   const activeDocIdRef = useRef(null);
   const isHydratingRef = useRef(false);
   const titleRef = useRef(title);
+  const canvasScrollRef = useRef(null);
+  const docScrollPositionsRef = useRef(new Map());
+  const docSelectionsRef = useRef(new Map());
+  const isActiveRef = useRef(isActive);
+
+  // Find in Document state
+  const [showFindBar, setShowFindBar] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findMatchIndex, setFindMatchIndex] = useState(0);
+  const [findMatchCount, setFindMatchCount] = useState(0);
+  const findInputRef = useRef(null);
+  const rawTextareaRef = useRef(null);
+
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
 
   useEffect(() => {
     titleRef.current = title;
@@ -230,7 +250,8 @@ export default function DocumentWriterView({
         transformPastedText: true,
         transformCopiedText: true
       }),
-      AIChangeMark
+      AIChangeMark,
+      SearchHighlight
     ],
     content: '',
     editorProps: {
@@ -248,8 +269,12 @@ export default function DocumentWriterView({
         scheduleAutoSave(activeDocIdRef.current, titleRef.current, md);
       }
     },
-    onSelectionUpdate: () => {
+    onSelectionUpdate: ({ editor: ed }) => {
       setEditorSelectionTick((t) => t + 1);
+      if (isActiveRef.current && activeDocIdRef.current && ed) {
+        const { from, to } = ed.state.selection;
+        docSelectionsRef.current.set(activeDocIdRef.current, { from, to });
+      }
     },
     onTransaction: () => {
       setEditorSelectionTick((t) => t + 1);
@@ -293,6 +318,15 @@ export default function DocumentWriterView({
       }, 0);
     }
 
+    if (canvasScrollRef.current) {
+      const savedTop = docScrollPositionsRef.current.get(doc.id) || 0;
+      requestAnimationFrame(() => {
+        if (canvasScrollRef.current) {
+          canvasScrollRef.current.scrollTop = savedTop;
+        }
+      });
+    }
+
     loadVersions(doc.id);
   }, [editor, checkHasAIChanges, loadVersions]);
 
@@ -332,16 +366,31 @@ export default function DocumentWriterView({
     if (!writerSeedPayload) return;
 
     const applySeed = async () => {
-      const { title: seedTitle, contentMd: seedContent, obsidianRelPath, mode = 'new' } = writerSeedPayload;
+      const { title: seedTitle, contentMd: seedContent, obsidianRelPath, mode = 'new', targetDocumentId = null } = writerSeedPayload;
       try {
-        if (mode === 'append' && activeDocIdRef.current && editor) {
-          const currentMd = isRawMode ? rawMarkdown : editor.storage.markdown.getMarkdown();
-          const combined = currentMd.trim() ? `${currentMd.trim()}\n\n${seedContent}` : seedContent;
-          isHydratingRef.current = true;
-          editor.commands.setContent(combined);
-          setRawMarkdown(combined);
-          setTimeout(() => { isHydratingRef.current = false; }, 0);
-          await persistDocument(activeDocIdRef.current, titleRef.current, combined);
+        if (mode === 'append') {
+          const targetId = targetDocumentId || activeDocIdRef.current;
+          if (targetId && targetId === activeDocIdRef.current && editor) {
+            const currentMd = isRawMode ? rawMarkdown : editor.storage.markdown.getMarkdown();
+            const combined = currentMd.trim() ? `${currentMd.trim()}\n\n${seedContent}` : seedContent;
+            isHydratingRef.current = true;
+            editor.commands.setContent(combined);
+            setRawMarkdown(combined);
+            setTimeout(() => { isHydratingRef.current = false; }, 0);
+            await persistDocument(targetId, titleRef.current, combined);
+          } else if (targetId) {
+            const targetDoc = documents.find((d) => d.id === targetId) || await api.getDocument(targetId);
+            if (targetDoc) {
+              const currentMd = targetDoc.content_md || '';
+              const combined = currentMd.trim() ? `${currentMd.trim()}\n\n${seedContent}` : seedContent;
+              const updated = await api.updateDocument(targetDoc.id, {
+                title: targetDoc.title,
+                contentMd: combined
+              });
+              setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+              loadDocumentIntoEditor(updated);
+            }
+          }
         } else {
           // Check if a document is already linked to this obsidianRelPath
           const existingLinked = obsidianRelPath
@@ -801,6 +850,136 @@ export default function DocumentWriterView({
   const availableProviders = ['gemini', 'openai', 'ollama', 'lmstudio'];
   const currentModels = providerHealth?.[aiProvider]?.models || [];
 
+  // Restore scroll & cursor position when toggling back to Writer mode
+  useEffect(() => {
+    if (!isActive || !activeDocIdRef.current) return;
+    const docId = activeDocIdRef.current;
+    const savedTop = docScrollPositionsRef.current.get(docId);
+    if (savedTop !== undefined && canvasScrollRef.current) {
+      requestAnimationFrame(() => {
+        if (canvasScrollRef.current) {
+          canvasScrollRef.current.scrollTop = savedTop;
+        }
+      });
+    }
+    const savedSel = docSelectionsRef.current.get(docId);
+    if (savedSel && editor && !isRawMode) {
+      const maxPos = editor.state.doc.content.size;
+      const from = Math.min(savedSel.from, maxPos);
+      const to = Math.min(savedSel.to, maxPos);
+      requestAnimationFrame(() => {
+        editor.commands.setTextSelection({ from, to });
+      });
+    }
+  }, [isActive, editor, isRawMode]);
+
+  const handleCanvasScroll = () => {
+    if (!isActiveRef.current || !activeDocIdRef.current || !canvasScrollRef.current) return;
+    docScrollPositionsRef.current.set(activeDocIdRef.current, canvasScrollRef.current.scrollTop);
+  };
+
+  const getRawMatches = useCallback((text, query) => {
+    const matches = [];
+    if (!text || !query || !query.trim()) return matches;
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    let idx = 0;
+    while ((idx = lowerText.indexOf(lowerQuery, idx)) !== -1) {
+      matches.push({ from: idx, to: idx + query.length });
+      idx += Math.max(1, query.length);
+    }
+    return matches;
+  }, []);
+
+  const focusMatchAtIndex = useCallback((query, nextIdx, shouldSelectInEditor = true) => {
+    if (!query || !query.trim()) {
+      setFindMatchCount(0);
+      setFindMatchIndex(0);
+      editor?.commands.clearSearchHighlight();
+      return;
+    }
+
+    if (isRawMode) {
+      const matches = getRawMatches(rawMarkdown, query);
+      setFindMatchCount(matches.length);
+      if (matches.length === 0) {
+        setFindMatchIndex(0);
+        return;
+      }
+      const wrapped = ((nextIdx % matches.length) + matches.length) % matches.length;
+      setFindMatchIndex(wrapped);
+      if (shouldSelectInEditor && rawTextareaRef.current) {
+        const m = matches[wrapped];
+        const ta = rawTextareaRef.current;
+        ta.focus();
+        ta.setSelectionRange(m.from, m.to);
+        const linesBefore = rawMarkdown.slice(0, m.from).split('\n').length;
+        const totalLines = Math.max(1, rawMarkdown.split('\n').length);
+        const approxTop = Math.max(0, ((linesBefore - 1) / totalLines) * ta.scrollHeight - ta.clientHeight / 2);
+        ta.scrollTop = approxTop;
+      }
+    } else if (editor) {
+      const matches = findMatchesInDoc(editor.state.doc, query);
+      setFindMatchCount(matches.length);
+      if (matches.length === 0) {
+        setFindMatchIndex(0);
+        editor.commands.setSearchHighlight(query, 0);
+        return;
+      }
+      const wrapped = ((nextIdx % matches.length) + matches.length) % matches.length;
+      setFindMatchIndex(wrapped);
+      editor.commands.setSearchHighlight(query, wrapped);
+      if (shouldSelectInEditor) {
+        const m = matches[wrapped];
+        editor.chain().setTextSelection({ from: m.from, to: m.to }).run();
+        requestAnimationFrame(() => {
+          const activeEl = canvasScrollRef.current?.querySelector('.writer-search-match-active');
+          if (activeEl) {
+            activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else {
+            try {
+              const coords = editor.view.coordsAtPos(m.from);
+              if (canvasScrollRef.current && coords) {
+                const rect = canvasScrollRef.current.getBoundingClientRect();
+                canvasScrollRef.current.scrollTop += coords.top - rect.top - rect.height / 2;
+              }
+            } catch (_) {}
+          }
+        });
+      }
+    }
+  }, [editor, isRawMode, rawMarkdown, getRawMatches]);
+
+  useEffect(() => {
+    if (!showFindBar) return;
+    focusMatchAtIndex(findQuery, 0, false);
+  }, [findQuery, showFindBar, isRawMode, rawMarkdown]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        if (!activeDocIdRef.current) return;
+        e.preventDefault();
+        setShowFindBar(true);
+        setTimeout(() => {
+          findInputRef.current?.focus();
+          findInputRef.current?.select();
+        }, 0);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive]);
+
+  const handleCloseFindBar = () => {
+    setShowFindBar(false);
+    setFindQuery('');
+    setFindMatchCount(0);
+    setFindMatchIndex(0);
+    editor?.commands.clearSearchHighlight();
+  };
+
   return (
     <div className="writer-container">
       {/* Left Rail: Documents List & Source Picker */}
@@ -975,6 +1154,22 @@ export default function DocumentWriterView({
               </div>
 
               <div className="writer-header-actions">
+                <button
+                  className={`writer-action-btn ${showFindBar ? 'active' : ''}`}
+                  onClick={() => {
+                    if (showFindBar) {
+                      handleCloseFindBar();
+                    } else {
+                      setShowFindBar(true);
+                      setTimeout(() => findInputRef.current?.focus(), 0);
+                    }
+                  }}
+                  title="Find in document (Cmd+F)"
+                >
+                  <Search size={15} />
+                  <span>Find</span>
+                </button>
+
                 <button
                   className={`writer-action-btn ${isRawMode ? 'active' : ''}`}
                   onClick={handleToggleRawMode}
@@ -1179,6 +1374,62 @@ export default function DocumentWriterView({
               </div>
             )}
 
+            {/* Find in Document Bar */}
+            {showFindBar && (
+              <div className="writer-find-bar">
+                <Search size={14} color="var(--text-muted)" />
+                <input
+                  ref={findInputRef}
+                  type="text"
+                  className="writer-find-input"
+                  value={findQuery}
+                  onChange={(e) => setFindQuery(e.target.value)}
+                  placeholder="Find word or phrase in document..."
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      focusMatchAtIndex(findQuery, e.shiftKey ? findMatchIndex - 1 : findMatchIndex + 1, true);
+                    } else if (e.key === 'Escape') {
+                      handleCloseFindBar();
+                    }
+                  }}
+                />
+                <span className="writer-find-count">
+                  {findQuery.trim()
+                    ? findMatchCount > 0
+                      ? `${findMatchIndex + 1} / ${findMatchCount}`
+                      : '0 matches'
+                    : ''}
+                </span>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  disabled={findMatchCount === 0}
+                  onClick={() => focusMatchAtIndex(findQuery, findMatchIndex - 1, true)}
+                  title="Previous match (Shift+Enter)"
+                >
+                  <ChevronUp size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  disabled={findMatchCount === 0}
+                  onClick={() => focusMatchAtIndex(findQuery, findMatchIndex + 1, true)}
+                  title="Next match (Enter)"
+                >
+                  <ChevronDown size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  onClick={handleCloseFindBar}
+                  title="Close (Esc)"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            )}
+
             {/* AI Change Highlight Banner */}
             {hasAIChanges && !isRawMode && (
               <div className="writer-ai-banner">
@@ -1202,10 +1453,15 @@ export default function DocumentWriterView({
             )}
 
             {/* Document Page Surface */}
-            <div className="writer-canvas-scroll">
+            <div
+              className="writer-canvas-scroll"
+              ref={canvasScrollRef}
+              onScroll={handleCanvasScroll}
+            >
               <div className="writer-page-sheet">
                 {isRawMode ? (
                   <textarea
+                    ref={rawTextareaRef}
                     className="writer-raw-textarea"
                     value={rawMarkdown}
                     onChange={handleRawMarkdownChange}

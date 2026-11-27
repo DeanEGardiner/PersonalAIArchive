@@ -9,10 +9,11 @@ import {
   Folder, 
   ArrowRight, 
   CheckCircle2,
-  MessageSquarePlus,
   Send,
   X,
-  FileEdit
+  FileEdit,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { api } from '../api';
 import FormattedText from './FormattedText';
@@ -22,7 +23,6 @@ export default function ObsidianNotesView({
   initialSearchQuery = '',
   onClearInitialNote,
   onInsertIntoComposer,
-  onStartChatWithNote,
   onOpenInWriter
 }) {
   const [notes, setNotes] = useState([]);
@@ -33,9 +33,73 @@ export default function ObsidianNotesView({
   const [isSearching, setIsSearching] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncToast, setSyncToast] = useState(null);
+  const [showFindBar, setShowFindBar] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findMatchIndex, setFindMatchIndex] = useState(0);
+  const [findMatchCount, setFindMatchCount] = useState(0);
 
   const searchTimerRef = useRef(null);
   const lastHandledRef = useRef(null);
+  const findInputRef = useRef(null);
+  const noteBodyRef = useRef(null);
+
+  const updateActiveMatchHighlight = (targetIdx, shouldScroll = false) => {
+    if (!noteBodyRef.current) return;
+    const matches = noteBodyRef.current.querySelectorAll('.writer-search-match');
+    setFindMatchCount(matches.length);
+    matches.forEach((el) => el.classList.remove('writer-search-match-active'));
+    if (matches.length === 0) {
+      setFindMatchIndex(0);
+      return;
+    }
+    const wrapped = ((targetIdx % matches.length) + matches.length) % matches.length;
+    setFindMatchIndex(wrapped);
+    const activeEl = matches[wrapped];
+    activeEl.classList.add('writer-search-match-active');
+    if (shouldScroll) {
+      activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  useEffect(() => {
+    if (!showFindBar || !findQuery.trim()) {
+      setFindMatchCount(0);
+      setFindMatchIndex(0);
+      if (noteBodyRef.current) {
+        noteBodyRef.current
+          .querySelectorAll('.writer-search-match-active')
+          .forEach((el) => el.classList.remove('writer-search-match-active'));
+      }
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      updateActiveMatchHighlight(0, false);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [findQuery, showFindBar, selectedNote?.id, selectedNote?.content]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        if (!selectedNote) return;
+        e.preventDefault();
+        setShowFindBar(true);
+        setTimeout(() => {
+          findInputRef.current?.focus();
+          findInputRef.current?.select();
+        }, 0);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedNote]);
+
+  const handleCloseFindBar = () => {
+    setShowFindBar(false);
+    setFindQuery('');
+    setFindMatchCount(0);
+    setFindMatchIndex(0);
+  };
 
   const loadData = async (query = '', targetNoteId = null) => {
     setIsLoading(true);
@@ -386,6 +450,22 @@ export default function ObsidianNotesView({
                 </div>
 
                 <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                  <button
+                    className={`btn-secondary ${showFindBar ? 'active' : ''}`}
+                    onClick={() => {
+                      if (showFindBar) {
+                        handleCloseFindBar();
+                      } else {
+                        setShowFindBar(true);
+                        setTimeout(() => findInputRef.current?.focus(), 0);
+                      }
+                    }}
+                    title="Find word or phrase in note (Cmd+F)"
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 12px' }}
+                  >
+                    <Search size={13} />
+                    <span>Find</span>
+                  </button>
                   {onOpenInWriter && (
                     <button
                       className="btn-secondary"
@@ -413,24 +493,72 @@ export default function ObsidianNotesView({
                       <span>Insert into Chat</span>
                     </button>
                   )}
-                  {onStartChatWithNote && (
-                    <button
-                      className="btn-primary"
-                      onClick={() => onStartChatWithNote(selectedNote)}
-                      title="Start a new chat analyzing this specific Obsidian note"
-                      style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 12px' }}
-                    >
-                      <MessageSquarePlus size={13} />
-                      <span>Ask AI About Note</span>
-                    </button>
-                  )}
                 </div>
               </div>
 
+              {/* Find in Note Bar */}
+              {showFindBar && (
+                <div className="writer-find-bar">
+                  <Search size={14} color="var(--text-muted)" />
+                  <input
+                    ref={findInputRef}
+                    type="text"
+                    className="writer-find-input"
+                    value={findQuery}
+                    onChange={(e) => setFindQuery(e.target.value)}
+                    placeholder="Find word or phrase in note..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        updateActiveMatchHighlight(e.shiftKey ? findMatchIndex - 1 : findMatchIndex + 1, true);
+                      } else if (e.key === 'Escape') {
+                        handleCloseFindBar();
+                      }
+                    }}
+                  />
+                  <span className="writer-find-count">
+                    {findQuery.trim()
+                      ? findMatchCount > 0
+                        ? `${findMatchIndex + 1} / ${findMatchCount}`
+                        : '0 matches'
+                      : ''}
+                  </span>
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    disabled={findMatchCount === 0}
+                    onClick={() => updateActiveMatchHighlight(findMatchIndex - 1, true)}
+                    title="Previous match (Shift+Enter)"
+                  >
+                    <ChevronUp size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    disabled={findMatchCount === 0}
+                    onClick={() => updateActiveMatchHighlight(findMatchIndex + 1, true)}
+                    title="Next match (Enter)"
+                  >
+                    <ChevronDown size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick={handleCloseFindBar}
+                    title="Close (Esc)"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              )}
+
               {/* Note Body */}
-              <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
+              <div ref={noteBodyRef} style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
                 <div className="message-bubble assistant" style={{ background: 'transparent', border: 'none', padding: 0, maxWidth: '100%' }}>
-                  <FormattedText text={selectedNote.content || selectedNote.preview || '*Empty note*'} />
+                  <FormattedText
+                    text={selectedNote.content || selectedNote.preview || '*Empty note*'}
+                    highlightQuery={showFindBar ? findQuery : ''}
+                  />
                 </div>
               </div>
             </div>

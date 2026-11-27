@@ -406,7 +406,18 @@ export default function App() {
 
       {/* Main Active View */}
       <main className="main-content">
-        {currentView === 'chat' && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            visibility: currentView === 'chat' ? 'visible' : 'hidden',
+            pointerEvents: currentView === 'chat' ? 'auto' : 'none',
+            zIndex: currentView === 'chat' ? 1 : -1
+          }}
+        >
           <ChatView 
             conversation={currentConversation}
             messages={messages}
@@ -427,8 +438,9 @@ export default function App() {
             onSendToWriter={handleSendToWriter}
             onOpenArchive={() => setCurrentView('archive')}
             onOpenDigest={() => setCurrentView('summary')}
+            isActive={currentView === 'chat'}
           />
-        )}
+        </div>
 
         {currentView === 'archive' && (
           <ArchiveView 
@@ -438,6 +450,7 @@ export default function App() {
             onSummarizeUrl={handleSummarizeUrlToThread}
             onRestoreComplete={handleRestoreComplete}
             onOpenInWriter={handleSendToWriter}
+            onNavigateToNote={handleNavigateToObsidianNote}
           />
         )}
 
@@ -460,7 +473,6 @@ export default function App() {
               setTargetObsidianSearchQuery('');
             }}
             onInsertIntoComposer={handleInsertIntoComposer}
-            onStartChatWithNote={handleStartChatWithNote}
             onOpenInWriter={handleSendToWriter}
           />
         )}
@@ -473,15 +485,27 @@ export default function App() {
           />
         )}
 
-        {currentView === 'writer' && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            visibility: currentView === 'writer' ? 'visible' : 'hidden',
+            pointerEvents: currentView === 'writer' ? 'auto' : 'none',
+            zIndex: currentView === 'writer' ? 1 : -1
+          }}
+        >
           <DocumentWriterView 
             writerSeedPayload={writerSeedPayload}
             onClearWriterSeed={() => setWriterSeedPayload(null)}
             providerHealth={providerHealth}
             defaultProvider={selectedProvider}
             defaultModel={selectedModel}
+            isActive={currentView === 'writer'}
           />
-        )}
+        </div>
       </main>
 
       {/* Settings Modal */}

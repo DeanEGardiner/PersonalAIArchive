@@ -17,7 +17,7 @@ import { api } from '../api';
 import FormattedText from './FormattedText';
 import RestoreModal from './RestoreModal';
 
-export default function ArchiveView({ conversations, onSelectConversation, setCurrentView, onSummarizeUrl, onRestoreComplete, onOpenInWriter }) {
+export default function ArchiveView({ conversations, onSelectConversation, setCurrentView, onSummarizeUrl, onRestoreComplete, onOpenInWriter, onNavigateToNote }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -174,7 +174,11 @@ export default function ArchiveView({ conversations, onSelectConversation, setCu
                   }}
                   onClick={() => {
                     if (isObsidian) {
-                      setCurrentView('obsidian');
+                      if (onNavigateToNote) {
+                        onNavigateToNote(res.id || res.rel_path, res.title || res.conversation_title || '');
+                      } else {
+                        setCurrentView('obsidian');
+                      }
                     } else if (res.conversation_id) {
                       onSelectConversation(res.conversation_id);
                       setCurrentView('chat');
