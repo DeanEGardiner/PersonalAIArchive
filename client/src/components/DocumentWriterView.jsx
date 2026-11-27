@@ -45,7 +45,8 @@ import {
   X,
   PanelRightOpen,
   PanelRightClose,
-  Square
+  Square,
+  Download
 } from 'lucide-react';
 import { api } from '../api';
 import AIChangeMark from '../extensions/AIChangeMark';
@@ -108,6 +109,7 @@ export default function DocumentWriterView({
   const [isLoading, setIsLoading] = useState(true);
   const [hasAIChanges, setHasAIChanges] = useState(false);
   const [preAiMarkdown, setPreAiMarkdown] = useState(null);
+  const [, setEditorSelectionTick] = useState(0);
 
   // Left Rail: 'docs' | 'sources'
   const [leftTab, setLeftTab] = useState('docs');
@@ -233,7 +235,8 @@ export default function DocumentWriterView({
     content: '',
     editorProps: {
       attributes: {
-        class: 'writer-prose-editor'
+        class: 'writer-prose-editor',
+        spellcheck: 'true'
       }
     },
     onUpdate: ({ editor: ed }) => {
@@ -244,6 +247,12 @@ export default function DocumentWriterView({
       if (activeDocIdRef.current) {
         scheduleAutoSave(activeDocIdRef.current, titleRef.current, md);
       }
+    },
+    onSelectionUpdate: () => {
+      setEditorSelectionTick((t) => t + 1);
+    },
+    onTransaction: () => {
+      setEditorSelectionTick((t) => t + 1);
     }
   });
 
@@ -594,6 +603,47 @@ export default function DocumentWriterView({
     }
   };
 
+  const handleDeleteVersion = async (versionId, e) => {
+    if (e) e.stopPropagation();
+    if (!activeDoc) return;
+    try {
+      await api.deleteDocumentVersion(activeDoc.id, versionId);
+      if (previewVersion?.id === versionId) {
+        setPreviewVersion(null);
+      }
+      setVersions((prev) => prev.filter((v) => v.id !== versionId));
+      const refreshed = await api.getDocument(activeDoc.id);
+      setActiveDoc(refreshed);
+      setDocuments((prev) => prev.map((d) => (d.id === refreshed.id ? refreshed : d)));
+      setSyncMessage({ type: 'success', text: 'Deleted document version' });
+      setTimeout(() => setSyncMessage(null), 2500);
+    } catch (err) {
+      setSyncMessage({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleExportDocx = async (versionId = null, e = null) => {
+    if (e) e.stopPropagation();
+    if (!activeDoc) return;
+    try {
+      if (!versionId) {
+        const currentMd = isRawMode ? rawMarkdown : (editor?.storage.markdown.getMarkdown() || '');
+        await persistDocument(activeDoc.id, titleRef.current, currentMd);
+      }
+      const url = versionId
+        ? api.getDocumentVersionDocxUrl(activeDoc.id, versionId)
+        : api.getDocumentDocxUrl(activeDoc.id);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = '';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      setSyncMessage({ type: 'error', text: err.message });
+    }
+  };
+
   const handleAcceptAllAIChanges = () => {
     if (!editor) return;
     editor.commands.clearAllAIChanges();
@@ -742,9 +792,9 @@ export default function DocumentWriterView({
     if (!editor) return;
     const val = e.target.value;
     if (val === 'p') editor.chain().focus().setParagraph().run();
-    if (val === 'h1') editor.chain().focus().toggleHeading({ level: 1 }).run();
-    if (val === 'h2') editor.chain().focus().toggleHeading({ level: 2 }).run();
-    if (val === 'h3') editor.chain().focus().toggleHeading({ level: 3 }).run();
+    if (val === 'h1') editor.chain().focus().setHeading({ level: 1 }).run();
+    if (val === 'h2') editor.chain().focus().setHeading({ level: 2 }).run();
+    if (val === 'h3') editor.chain().focus().setHeading({ level: 3 }).run();
   };
 
   const wordCount = activeDoc?.word_count ?? (rawMarkdown.trim() ? rawMarkdown.trim().split(/\s+/).length : 0);
@@ -913,6 +963,14 @@ export default function DocumentWriterView({
                       Markdown (.md)
                     </span>
                   )}
+                  <span
+                    className="writer-meta-badge"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#6ee7b7', cursor: 'help' }}
+                    title="Spellcheck is active. Right-click any underlined word to see suggestions, replace misspellings, or add words to dictionary."
+                  >
+                    <Check size={11} />
+                    <span>Spellcheck On</span>
+                  </span>
                 </div>
               </div>
 
@@ -955,6 +1013,15 @@ export default function DocumentWriterView({
                     </div>
                   )}
                 </div>
+
+                <button
+                  className="writer-action-btn"
+                  onClick={() => handleExportDocx(null)}
+                  title="Export current document as Word (.docx)"
+                >
+                  <Download size={15} />
+                  <span>Word (.docx)</span>
+                </button>
 
                 <button
                   className="writer-action-btn primary"
@@ -1395,14 +1462,24 @@ export default function DocumentWriterView({
                       </span>
                     ))}
                   </div>
-                  <button
-                    className="writer-run-ai-btn"
-                    style={{ marginTop: '8px' }}
-                    onClick={() => handleRestoreVersion(previewVersion.id)}
-                  >
-                    <RotateCcw size={13} />
-                    <span>Restore v{previewVersion.version_number}</span>
-                  </button>
+                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+                    <button
+                      className="writer-run-ai-btn"
+                      style={{ flex: 1 }}
+                      onClick={() => handleRestoreVersion(previewVersion.id)}
+                    >
+                      <RotateCcw size={13} />
+                      <span>Restore v{previewVersion.version_number}</span>
+                    </button>
+                    <button
+                      className="writer-action-btn"
+                      onClick={() => handleExportDocx(previewVersion.id)}
+                      title={`Export v${previewVersion.version_number} as Word (.docx)`}
+                    >
+                      <Download size={13} />
+                      <span>.docx</span>
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1422,6 +1499,22 @@ export default function DocumentWriterView({
                         <span className="writer-version-num">v{v.version_number}</span>
                         <span className="writer-version-label">{v.label || 'Snapshot'}</span>
                         <span className={`writer-author-tag ${v.author_type}`}>{v.author_type}</span>
+                        <button
+                          type="button"
+                          className="writer-version-export-btn"
+                          title={`Export v${v.version_number} as Word (.docx)`}
+                          onClick={(e) => handleExportDocx(v.id, e)}
+                        >
+                          <Download size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="writer-version-delete-btn"
+                          title={`Delete v${v.version_number}`}
+                          onClick={(e) => handleDeleteVersion(v.id, e)}
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       </div>
                       <div className="writer-version-item-meta">
                         <span>{new Date(v.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>

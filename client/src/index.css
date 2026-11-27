@@ -2124,6 +2124,35 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.writer-version-export-btn,
+.writer-version-delete-btn {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  transition: all 0.15s ease;
+}
+
+.writer-version-item:hover .writer-version-export-btn,
+.writer-version-item:hover .writer-version-delete-btn {
+  opacity: 1;
+}
+
+.writer-version-export-btn:hover {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.writer-version-delete-btn:hover {
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.12);
+}
+
 .writer-version-item.current {
   border-color: rgba(139, 92, 246, 0.45);
   background: rgba(139, 92, 246, 0.12);

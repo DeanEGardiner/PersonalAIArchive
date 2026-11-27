@@ -25,11 +25,15 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "icon": "build/icon.icns",
@@ -80,6 +84,7 @@
     "archiver": "^8.0.0",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.6",
+    "docx": "^9.15.4",
     "dotenv": "^18.0.1",
     "express": "^5.2.1",
     "multer": "^2.4.0",

@@ -6,6 +6,7 @@ const { db } = require('./db');
 const config = require('./config');
 
 const DOCUMENTS_VAULT_SUBDIR = path.join('AI Archive', 'Documents');
+const DOCUMENTS_VERSIONS_SUBDIR = path.join(DOCUMENTS_VAULT_SUBDIR, 'Versions');
 
 class DocumentService {
   computeChecksum(content) {
@@ -190,7 +191,13 @@ class DocumentService {
       db.prepare('UPDATE documents SET current_version_id = ?, updated_at = ? WHERE id = ?').run(versionId, now, documentId);
     })();
 
-    return db.prepare('SELECT * FROM document_versions WHERE id = ?').get(versionId);
+    const savedVersion = db.prepare('SELECT * FROM document_versions WHERE id = ?').get(versionId);
+    try {
+      this.writeVersionToVault(doc, savedVersion);
+    } catch (err) {
+      console.warn(`[DocumentService] Version vault write-through skipped: ${err.message}`);
+    }
+    return savedVersion;
   }
 
   listVersions(documentId) {
@@ -212,6 +219,46 @@ class DocumentService {
       SELECT * FROM document_versions
       WHERE id = ? AND document_id = ?
     `).get(versionId, documentId) || null;
+  }
+
+  deleteVersion(documentId, versionId) {
+    const doc = this.getDocument(documentId);
+    if (!doc) {
+      throw new Error('Document not found');
+    }
+    const targetVersion = this.getVersion(documentId, versionId);
+    if (!targetVersion) {
+      throw new Error('Version not found');
+    }
+
+    let nextCurrentId = doc.current_version_id;
+
+    db.transaction(() => {
+      db.prepare('DELETE FROM document_versions WHERE id = ? AND document_id = ?').run(versionId, documentId);
+      if (doc.current_version_id === versionId) {
+        const latestRemaining = db.prepare(`
+          SELECT id FROM document_versions
+          WHERE document_id = ?
+          ORDER BY version_number DESC LIMIT 1
+        `).get(documentId);
+        nextCurrentId = latestRemaining?.id || null;
+        db.prepare('UPDATE documents SET current_version_id = ? WHERE id = ?').run(nextCurrentId, documentId);
+      }
+    })();
+
+    try {
+      const vaultPath = this.getVaultPath();
+      if (this.isValidVaultPath(vaultPath)) {
+        const versionPath = this.safeResolveInVault(vaultPath, this.resolveVersionRelPath(doc, targetVersion.version_number));
+        if (fs.existsSync(versionPath)) {
+          fs.unlinkSync(versionPath);
+        }
+      }
+    } catch (err) {
+      console.warn(`[DocumentService] Version vault cleanup skipped: ${err.message}`);
+    }
+
+    return { success: true, id: versionId, current_version_id: nextCurrentId };
   }
 
   restoreVersion(documentId, versionId) {
@@ -287,13 +334,56 @@ class DocumentService {
         .run(relPath, checksum, doc.id);
     }
 
+    const versionSync = this.syncDocumentVersionsToVault(doc, vaultPath);
+
     return {
       synced: true,
       wroteFile,
       relPath,
       targetPath,
-      checksum
+      checksum,
+      versionsExported: versionSync.versionsExported || 0
     };
+  }
+
+  resolveVersionRelPath(doc, versionNumber) {
+    const safeTitle = this.sanitizeFileName(doc.title);
+    return path.join(DOCUMENTS_VERSIONS_SUBDIR, `${safeTitle} v${versionNumber}.md`);
+  }
+
+  writeVersionToVault(doc, version, customVaultPath = null) {
+    const vaultPath = customVaultPath || this.getVaultPath();
+    if (!this.isValidVaultPath(vaultPath)) {
+      return { synced: false, wroteFile: false };
+    }
+    const relPath = this.resolveVersionRelPath(doc, version.version_number);
+    const targetPath = this.safeResolveInVault(vaultPath, relPath);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+
+    const content = version.content_md || '';
+    if (!fs.existsSync(targetPath) || fs.readFileSync(targetPath, 'utf8') !== content) {
+      fs.writeFileSync(targetPath, content, 'utf8');
+      return { synced: true, wroteFile: true, relPath, targetPath };
+    }
+    return { synced: true, wroteFile: false, relPath, targetPath };
+  }
+
+  syncDocumentVersionsToVault(docOrId, customVaultPath = null) {
+    const doc = typeof docOrId === 'string' ? this.getDocument(docOrId) : docOrId;
+    if (!doc) return { synced: false, versionsExported: 0 };
+
+    const vaultPath = customVaultPath || this.getVaultPath();
+    if (!this.isValidVaultPath(vaultPath)) {
+      return { synced: false, versionsExported: 0 };
+    }
+
+    const versions = db.prepare('SELECT * FROM document_versions WHERE document_id = ? ORDER BY version_number ASC').all(doc.id);
+    let versionsExported = 0;
+    for (const ver of versions) {
+      const res = this.writeVersionToVault(doc, ver, vaultPath);
+      if (res.wroteFile) versionsExported++;
+    }
+    return { synced: true, versionsExported };
   }
 }
 

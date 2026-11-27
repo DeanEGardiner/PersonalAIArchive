@@ -378,6 +378,7 @@ ${s.summary_text}
     let docsImported = 0;
     let docsUpdated = 0;
     let docsExported = 0;
+    let versionsExported = 0;
 
     const activeDocs = db.prepare('SELECT * FROM documents WHERE is_deleted = 0').all();
     const trackedPaths = new Set();
@@ -401,41 +402,40 @@ ${s.summary_text}
               db.prepare('UPDATE documents SET obsidian_rel_path = ?, obsidian_checksum = ? WHERE id = ?')
                 .run(relPath, diskChecksum, doc.id);
             }
-            continue;
-          }
-
-          const dbUpdatedMs = doc.updated_at ? new Date(doc.updated_at).getTime() : 0;
-          const diskNewerThanLastSync = doc.obsidian_checksum && diskChecksum !== doc.obsidian_checksum;
-          const dbChangedSinceLastSync = doc.obsidian_checksum && dbChecksum !== doc.obsidian_checksum;
-
-          if (diskNewerThanLastSync && (!dbChangedSinceLastSync || stat.mtimeMs > dbUpdatedMs)) {
-            // Disk wins: snapshot current DB draft first so nothing is lost
-            if (dbChangedSinceLastSync) {
-              documentService.saveVersion(doc.id, {
-                label: 'Auto-backup before Obsidian sync overwrite',
-                authorType: 'auto'
-              });
-            }
-            const title = this.extractTitle(diskContent, path.basename(targetPath)) || doc.title;
-            const now = new Date().toISOString();
-            db.prepare(`
-              UPDATE documents
-              SET title = ?, content_md = ?, obsidian_rel_path = ?, obsidian_checksum = ?, word_count = ?, updated_at = ?
-              WHERE id = ?
-            `).run(title, diskContent, relPath, diskChecksum, documentService.countWords(diskContent), now, doc.id);
-
-            documentService.saveVersion(doc.id, {
-              label: 'Synced from Obsidian',
-              authorType: 'obsidian_sync'
-            });
-            docsUpdated++;
           } else {
-            // DB wins: write DB content to disk
-            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-            fs.writeFileSync(targetPath, dbContent, 'utf8');
-            db.prepare('UPDATE documents SET obsidian_rel_path = ?, obsidian_checksum = ? WHERE id = ?')
-              .run(relPath, dbChecksum, doc.id);
-            docsExported++;
+            const dbUpdatedMs = doc.updated_at ? new Date(doc.updated_at).getTime() : 0;
+            const diskNewerThanLastSync = doc.obsidian_checksum && diskChecksum !== doc.obsidian_checksum;
+            const dbChangedSinceLastSync = doc.obsidian_checksum && dbChecksum !== doc.obsidian_checksum;
+
+            if (diskNewerThanLastSync && (!dbChangedSinceLastSync || stat.mtimeMs > dbUpdatedMs)) {
+              // Disk wins: snapshot current DB draft first so nothing is lost
+              if (dbChangedSinceLastSync) {
+                documentService.saveVersion(doc.id, {
+                  label: 'Auto-backup before Obsidian sync overwrite',
+                  authorType: 'auto'
+                });
+              }
+              const title = this.extractTitle(diskContent, path.basename(targetPath)) || doc.title;
+              const now = new Date().toISOString();
+              db.prepare(`
+                UPDATE documents
+                SET title = ?, content_md = ?, obsidian_rel_path = ?, obsidian_checksum = ?, word_count = ?, updated_at = ?
+                WHERE id = ?
+              `).run(title, diskContent, relPath, diskChecksum, documentService.countWords(diskContent), now, doc.id);
+
+              documentService.saveVersion(doc.id, {
+                label: 'Synced from Obsidian',
+                authorType: 'obsidian_sync'
+              });
+              docsUpdated++;
+            } else {
+              // DB wins: write DB content to disk
+              fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+              fs.writeFileSync(targetPath, dbContent, 'utf8');
+              db.prepare('UPDATE documents SET obsidian_rel_path = ?, obsidian_checksum = ? WHERE id = ?')
+                .run(relPath, dbChecksum, doc.id);
+              docsExported++;
+            }
           }
         } else {
           // Export new document to disk
@@ -445,6 +445,10 @@ ${s.summary_text}
             .run(relPath, dbChecksum, doc.id);
           docsExported++;
         }
+
+        const latestDoc = documentService.getDocument(doc.id) || doc;
+        const verSync = documentService.syncDocumentVersionsToVault(latestDoc, vaultPath);
+        versionsExported += verSync.versionsExported || 0;
       } catch (err) {
         console.warn(`[ObsidianSync] Failed syncing document ${doc.id}:`, err.message);
       }
@@ -475,7 +479,7 @@ ${s.summary_text}
       console.warn('[ObsidianSync] Failed scanning AI Archive/Documents:', err.message);
     }
 
-    return { docsImported, docsUpdated, docsExported };
+    return { docsImported, docsUpdated, docsExported, versionsExported };
   }
 
   searchNotes(query, limit = 500) {

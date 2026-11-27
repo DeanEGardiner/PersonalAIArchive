@@ -369,6 +369,20 @@ export const api = {
     });
   },
 
+  deleteDocumentVersion(id, versionId) {
+    return request(`/api/documents/${id}/versions/${versionId}`, {
+      method: 'DELETE'
+    });
+  },
+
+  getDocumentDocxUrl(id) {
+    return `/api/documents/${id}/export/docx`;
+  },
+
+  getDocumentVersionDocxUrl(id, versionId) {
+    return `/api/documents/${id}/versions/${versionId}/export/docx`;
+  },
+
   async streamDocumentAI({
     documentId,
     action = 'edit',

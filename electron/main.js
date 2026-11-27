@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { app, BrowserWindow, Menu, shell } = require('electron');
+const { app, BrowserWindow, Menu, MenuItem, ipcMain, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 
@@ -65,8 +65,98 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      spellcheck: true
     }
+  });
+
+  // Ensure default spellchecker language is set (e.g. system locale or en-US)
+  try {
+    const session = mainWindow.webContents.session;
+    const currentLangs = session.getSpellCheckerLanguages();
+    if (!currentLangs || currentLangs.length === 0) {
+      const defaultLang = app.getLocale() || 'en-US';
+      session.setSpellCheckerLanguages([defaultLang.startsWith('en') ? defaultLang : 'en-US']);
+    }
+  } catch (err) {
+    console.warn('[Electron] Spellchecker language initialization warning:', err.message);
+  }
+
+  // Handle right-click context menu with spellcheck suggestions & dictionary actions
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    const menu = new Menu();
+
+    if (params.misspelledWord) {
+      if (params.dictionarySuggestions && params.dictionarySuggestions.length > 0) {
+        for (const suggestion of params.dictionarySuggestions.slice(0, 8)) {
+          menu.append(new MenuItem({
+            label: suggestion,
+            click: () => mainWindow.webContents.replaceMisspelling(suggestion)
+          }));
+        }
+      } else {
+        menu.append(new MenuItem({
+          label: 'No Spelling Suggestions',
+          enabled: false
+        }));
+      }
+
+      menu.append(new MenuItem({ type: 'separator' }));
+
+      menu.append(new MenuItem({
+        label: `Add "${params.misspelledWord}" to Dictionary`,
+        click: () => {
+          try {
+            mainWindow.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord);
+          } catch (err) {
+            console.error('Failed to add word to dictionary:', err);
+          }
+        }
+      }));
+
+      menu.append(new MenuItem({ type: 'separator' }));
+    }
+
+    if (params.isEditable) {
+      menu.append(new MenuItem({ label: 'Undo', role: 'undo', enabled: params.editFlags.canUndo }));
+      menu.append(new MenuItem({ label: 'Redo', role: 'redo', enabled: params.editFlags.canRedo }));
+      menu.append(new MenuItem({ type: 'separator' }));
+      menu.append(new MenuItem({ label: 'Cut', role: 'cut', enabled: params.editFlags.canCut }));
+      menu.append(new MenuItem({ label: 'Copy', role: 'copy', enabled: params.editFlags.canCopy }));
+      menu.append(new MenuItem({ label: 'Paste', role: 'paste', enabled: params.editFlags.canPaste }));
+      menu.append(new MenuItem({ label: 'Select All', role: 'selectAll', enabled: params.editFlags.canSelectAll }));
+    } else if (params.selectionText) {
+      menu.append(new MenuItem({ label: 'Copy', role: 'copy' }));
+    }
+
+    try {
+      const session = mainWindow.webContents.session;
+      const currentSpellLangs = session.getSpellCheckerLanguages() || [];
+      const commonLangs = [
+        { code: 'en-US', label: 'English (United States)' },
+        { code: 'en-GB', label: 'English (United Kingdom)' },
+        { code: 'en-AU', label: 'English (Australia)' },
+        { code: 'en-CA', label: 'English (Canada)' }
+      ];
+
+      const langSubmenu = new Menu();
+      for (const lang of commonLangs) {
+        langSubmenu.append(new MenuItem({
+          label: lang.label,
+          type: 'checkbox',
+          checked: currentSpellLangs.includes(lang.code),
+          click: () => session.setSpellCheckerLanguages([lang.code])
+        }));
+      }
+
+      menu.append(new MenuItem({ type: 'separator' }));
+      menu.append(new MenuItem({
+        label: 'Spelling Language',
+        submenu: langSubmenu
+      }));
+    } catch (_) {}
+
+    menu.popup({ window: mainWindow, x: params.x, y: params.y });
   });
 
   const appUrl = `http://${HOST}:${PORT}`;
@@ -114,7 +204,45 @@ function setupApplicationMenu() {
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
-        { role: 'selectAll' }
+        { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Spelling and Grammar',
+          submenu: [
+            {
+              label: 'Check Spelling While Typing',
+              type: 'checkbox',
+              checked: true,
+              click: (item) => {
+                try {
+                  mainWindow?.webContents?.session?.setSpellCheckerEnabled?.(item.checked);
+                } catch (_) {}
+              }
+            },
+            { type: 'separator' },
+            {
+              label: 'English (United States)',
+              type: 'radio',
+              checked: true,
+              click: () => mainWindow?.webContents?.session?.setSpellCheckerLanguages(['en-US'])
+            },
+            {
+              label: 'English (United Kingdom)',
+              type: 'radio',
+              click: () => mainWindow?.webContents?.session?.setSpellCheckerLanguages(['en-GB'])
+            },
+            {
+              label: 'English (Australia)',
+              type: 'radio',
+              click: () => mainWindow?.webContents?.session?.setSpellCheckerLanguages(['en-AU'])
+            },
+            {
+              label: 'English (Canada)',
+              type: 'radio',
+              click: () => mainWindow?.webContents?.session?.setSpellCheckerLanguages(['en-CA'])
+            }
+          ]
+        }
       ]
     },
     {
@@ -153,6 +281,55 @@ function setupApplicationMenu() {
 }
 
 app.whenReady().then(() => {
+  // Register spellcheck IPC handlers
+  ipcMain.handle('spellcheck:add-word', (event, word) => {
+    if (word && typeof word === 'string') {
+      try {
+        mainWindow?.webContents?.session?.addWordToSpellCheckerDictionary(word.trim());
+        return true;
+      } catch (err) {
+        console.error('Failed to add word to dictionary:', err);
+      }
+    }
+    return false;
+  });
+
+  ipcMain.handle('spellcheck:add-words', (event, words) => {
+    if (Array.isArray(words)) {
+      try {
+        for (const w of words) {
+          if (w && typeof w === 'string') {
+            mainWindow?.webContents?.session?.addWordToSpellCheckerDictionary(w.trim());
+          }
+        }
+        return true;
+      } catch (err) {
+        console.error('Failed to add words to dictionary:', err);
+      }
+    }
+    return false;
+  });
+
+  ipcMain.handle('spellcheck:get-languages', () => {
+    try {
+      return mainWindow?.webContents?.session?.getSpellCheckerLanguages() || ['en-US'];
+    } catch (_) {
+      return ['en-US'];
+    }
+  });
+
+  ipcMain.handle('spellcheck:set-languages', (event, languages) => {
+    try {
+      if (Array.isArray(languages)) {
+        mainWindow?.webContents?.session?.setSpellCheckerLanguages(languages);
+        return true;
+      }
+    } catch (err) {
+      console.error('Failed to set spellcheck languages:', err);
+    }
+    return false;
+  });
+
   setupApplicationMenu();
   startServer();
   waitForServer(() => {

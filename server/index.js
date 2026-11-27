@@ -16,6 +16,7 @@ const embeddingService = require('./embeddingService');
 const hybridSearch = require('./hybridSearch');
 const mindmapService = require('./mindmapService');
 const documentService = require('./documentService');
+const { markdownToDocxBuffer } = require('./docxExporter');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -1516,6 +1517,59 @@ app.post('/api/documents/:id/versions/:versionId/restore', (req, res) => {
   } catch (err) {
     const status = err.message.includes('not found') ? 404 : 400;
     res.status(status).json({ error: err.message });
+  }
+});
+
+app.delete('/api/documents/:id/versions/:versionId', (req, res) => {
+  try {
+    const result = documentService.deleteVersion(req.params.id, req.params.versionId);
+    res.json(result);
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get('/api/documents/:id/export/docx', async (req, res) => {
+  try {
+    const doc = documentService.getDocument(req.params.id);
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    const buffer = await markdownToDocxBuffer({
+      title: doc.title,
+      contentMd: doc.content_md || ''
+    });
+    const safeName = documentService.sanitizeFileName(doc.title);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.docx"`);
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/documents/:id/versions/:versionId/export/docx', async (req, res) => {
+  try {
+    const doc = documentService.getDocument(req.params.id);
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    const version = documentService.getVersion(req.params.id, req.params.versionId);
+    if (!version) {
+      return res.status(404).json({ error: 'Version not found' });
+    }
+    const buffer = await markdownToDocxBuffer({
+      title: doc.title,
+      contentMd: version.content_md || '',
+      versionLabel: `v${version.version_number}${version.label ? ` — ${version.label}` : ''}`
+    });
+    const safeName = documentService.sanitizeFileName(doc.title);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}_v${version.version_number}.docx"`);
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
